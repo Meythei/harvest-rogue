@@ -43,6 +43,13 @@
       </div>
     </header>
 
+    <div id="infobar">
+      <div class="info"><span class="label">神託</span> <span id="oracle-text">—</span></div>
+      <div class="info"><span class="label">旬</span> <span id="season-text">—</span></div>
+      <div class="info"><span class="label">次のノルマ</span> <span id="next-text">—</span></div>
+      <div class="info grow"><span class="label"><canvas id="charm-icon" width="16" height="16"></canvas>お守り</span> <span id="charm-list"></span></div>
+    </div>
+
     <main id="stage">
       <canvas id="game" width="960" height="600"></canvas>
 
@@ -50,6 +57,14 @@
         <div class="card wide">
           <h1>ハーベスト・ローグ</h1>
           <p class="sub">空腹度を行動力にして畑を広げ、納期ノルマに挑む農業ローグライク自動化コロニーシム</p>
+          <div class="traits">
+            <div class="label">特性を1つ選ぶ（長所と短所がセット）</div>
+            <div id="trait-buttons" class="buttons"></div>
+          </div>
+          <div class="traits">
+            <div class="label">縛りを付ける（いくつでも。付けた分だけ持ち帰る種籾が増える）</div>
+            <div id="pact-buttons" class="buttons"></div>
+          </div>
           <div class="row">
             <button id="start-1p" class="primary">1人で始める</button>
             <button id="start-2p">2人で始める（同じキーボード）</button>
@@ -63,6 +78,12 @@
                 <li>期限までにノルマを達成すると、3つの中から1つアップグレードを選べます</li>
                 <li>途切れずに納品し続けるとコンボ倍率が上がり、ビートが重なっていきます</li>
                 <li>雹や嵐は天候防御パイロンで防げます</li>
+                <li>手持ちをまとめて納品すると中身の組み合わせで<b>役</b>が付き、倍率が上がります</li>
+                <li>ノルマのあとは<b>市場</b>でお守りを買えます。3つ目ごとのノルマには縛りの付いた<b>ボス</b>が出ます</li>
+                <li>毎朝<b>神託</b>が下り、その日だけの祝福か呪いが起きます。<b>補給物資</b>が落ちてきたら拾いに行きましょう</li>
+                <li>毎日ひとつ<b>旬</b>の作物が決まります。収穫に空腹度を使わず、納品のコインが1.5倍です</li>
+                <li>地面に放っておいた作物は<b>腐ります</b>。腐った作物は売れず、食べると最大空腹度が減ります</li>
+                <li>前日に予告される<b>カラスの群れ</b>は、近づくか<b>かかし</b>で追い払えます</li>
               </ul>
               <h2>操作</h2>
               <table class="keys">
@@ -89,6 +110,22 @@
           <h1>ノルマ達成！</h1>
           <p class="sub">アップグレードを1つ選んでください（1〜3キーでも選べます）</p>
           <div id="upgrade-cards" class="upgrade-cards"></div>
+        </div>
+      </section>
+
+      <section id="shop" class="overlay hidden">
+        <div class="card wide">
+          <h1>市場</h1>
+          <p class="sub">コインでお守りを買えます（1〜3キーで購入 / R で品替え / Enter で次のノルマへ）</p>
+          <div id="shop-next" class="small"></div>
+          <div id="shop-cards" class="upgrade-cards"></div>
+          <h2>持っているお守り <span id="shop-slots" class="small"></span></h2>
+          <div id="shop-owned" class="owned"></div>
+          <div class="row shop-actions">
+            <span id="shop-coins" class="big"></span>
+            <button id="shop-reroll"></button>
+            <button id="shop-leave" class="primary">次のノルマへ（Enter）</button>
+          </div>
         </div>
       </section>
 

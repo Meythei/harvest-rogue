@@ -1,5 +1,6 @@
-// サウンド: WebAudio で合成するブレイクビーツと効果音。
-// コンボ数に応じてドラムのパートが重なり、コンボが切れると音が抜ける（Amen Break 風の演出）。
+// サウンド: 効果音は Kenney の CC0 素材（assets/sfx/）を再生し、読み込めないときだけ合成音で鳴らす。
+// BGM はコンボ数に応じてドラムのパートが重なるブレイクビーツ（Amen Break 風の演出）。
+// 外部から取得できる CC0 のドラムループがなかったため、ドラムだけは WebAudio で合成している。
 
 let ac = null;
 let master = null;
@@ -33,6 +34,35 @@ export function initAudio() {
   const d = noiseBuf.getChannelData(0);
   for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   nextStepTime = ac.currentTime + 0.05;
+  loadSamples();
+}
+
+// 効果音のサンプル。ファイル名は sfx() の名前と同じ
+const SAMPLE_NAMES = ['till', 'plant', 'harvest', 'pickup', 'deliver', 'eat', 'pump', 'burn', 'build',
+  'deny', 'break', 'warn', 'hit', 'quota', 'fail', 'warp', 'cut', 'crow', 'crate', 'oracle', 'hand', 'select', 'rot'];
+const SAMPLE_VOL = { deliver: 0.6, crate: 0.8, hit: 0.5, crow: 0.5, build: 0.8, burn: 0.7, rot: 0.6 };
+const samples = {};
+
+function loadSamples() {
+  for (const name of SAMPLE_NAMES) {
+    fetch(new URL(`../assets/sfx/${name}.mp3`, import.meta.url))
+      .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+      .then((buf) => ac.decodeAudioData(buf))
+      .then((decoded) => { samples[name] = decoded; })
+      .catch(() => {}); // 読み込めなければ合成音のまま
+  }
+}
+
+function playSample(name) {
+  const buf = samples[name];
+  if (!buf) return false;
+  const src = ac.createBufferSource(); src.buffer = buf;
+  // 連打したときに単調にならないよう、ピッチを少し揺らす
+  src.playbackRate.value = 0.94 + Math.random() * 0.12;
+  const g = ac.createGain(); g.gain.value = SAMPLE_VOL[name] ?? 1;
+  src.connect(g).connect(master);
+  src.start();
+  return true;
 }
 
 export function setAudioEnabled(v) { enabled = v; if (master) master.gain.value = v ? 0.5 : 0; }
@@ -116,6 +146,7 @@ function tone(f, dur, type = 'square', vol = 0.15, slide = 0) {
 
 export function sfx(name) {
   if (!ac || !enabled) return;
+  if (playSample(name)) return;
   switch (name) {
     case 'till': noise(ac.currentTime, 0.08, 0.25, 'lowpass', 900); break;
     case 'plant': tone(520, 0.06, 'square', 0.08); break;
@@ -134,6 +165,12 @@ export function sfx(name) {
     case 'fail': [392, 330, 262, 196].forEach((f, i) => setTimeout(() => tone(f, 0.2, 'triangle', 0.15), i * 150)); break;
     case 'warp': tone(400, 0.2, 'sine', 0.15, 900); break;
     case 'cut': noise(ac.currentTime, 0.04, 0.3, 'highpass', 4000); break;
+    case 'crow': tone(1200, 0.12, 'sawtooth', 0.08, -600); break;
+    case 'crate': noise(ac.currentTime, 0.1, 0.3, 'lowpass', 400); break;
+    case 'oracle': tone(784, 0.3, 'sine', 0.12, 400); break;
+    case 'hand': [659, 880].forEach((f, i) => setTimeout(() => tone(f, 0.1, 'square', 0.1), i * 70)); break;
+    case 'select': tone(700, 0.04, 'square', 0.06); break;
+    case 'rot': tone(180, 0.2, 'sawtooth', 0.08, -80); break;
     default: break;
   }
 }
