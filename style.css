@@ -125,3 +125,12 @@ button.active { border-color: var(--accent); background: #4a4420; }
   .upgrade-cards { grid-template-columns: 1fr; }
   .upgrade-card { min-height: 0; }
 }
+
+/* オンライン */
+.online { margin-top: 12px; padding: 8px 10px; background: var(--panel-2); border-radius: 4px; }
+.online h2 { margin-top: 0; }
+.online input { font: inherit; background: #1b1f16; color: var(--text); border: 2px solid var(--line); border-radius: 4px; padding: 6px 8px; width: 9em; }
+#mp-code { text-transform: uppercase; width: 7em; }
+#mp-status { min-height: 1.2em; margin: 6px 0 0; }
+#mp-status.bad { color: var(--bad); }
+#room-badge { align-self: center; font-weight: bold; color: var(--accent); padding: 0 4px; }

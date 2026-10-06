@@ -1,0 +1,17 @@
+# オンライン協力プレイ用の Cloudflare Worker
+# - /room/<コード> : WebSocket。部屋ごとに Durable Object が中継する
+# - それ以外      : ゲーム本体（デプロイ時に public/ へコピーした静的ファイル）
+name = "harvest-rogue"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+
+[assets]
+directory = "./public"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
