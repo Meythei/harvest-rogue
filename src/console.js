@@ -1,6 +1,7 @@
 // 農場管理端末（HackNet 風のコンソール）
 import { CROPS, TECH, FARM_TIERS, BUILDINGS } from './data.js';
 import { setAudioEnabled, isAudioEnabled } from './audio.js';
+import { CHARMS, BOSSES, ORACLES, TRAITS } from './extras.js';
 
 const HELP = [
   'help                  コマンド一覧',
@@ -9,6 +10,8 @@ const HELP = [
   'tech                  技術ツリーの進行度',
   'power                 電力の収支',
   'weather               天気予報',
+  'oracle                今日の神託とボス',
+  'charms                持っているお守り',
   'drone                 ドローンの状態',
   'drone mode <m>        ドローンの運び先 (deliver | burn | store)',
   'seed <作物>           植える作物を変更 (例: seed tomato)',
@@ -67,6 +70,19 @@ export function runCommand(game, line) {
       else out.push(`${w.kind === 'hail' ? '雹' : '嵐'} ${w.phase === 'warning' ? '接近中' : '発生中'} (${w.timer.toFixed(0)}秒)`);
       break;
     }
+    case 'oracle': {
+      const o = g.oracle && ORACLES[g.oracle];
+      out.push(`神託: ${o ? `${o.name} — ${o.desc}` : 'なし'}`);
+      out.push(`ボス: ${g.quota.boss ? `${BOSSES[g.quota.boss].name} — ${BOSSES[g.quota.boss].desc}` : 'なし'}`);
+      const u = g.upcoming;
+      if (u) out.push(`次のノルマ: ${CROPS[u.crop].name}${u.boss ? ` / ボス ${BOSSES[u.boss].name}` : ''}`);
+      out.push(`特性: ${TRAITS[g.trait]?.name || 'なし'}  まな板の残り: ${g.boardCharges}回`);
+      break;
+    }
+    case 'charms':
+      out.push(`お守り ${g.charms.length}/${g.charmSlots}`);
+      g.charms.forEach((k) => out.push(`  ${CHARMS[k].name}: ${CHARMS[k].desc}`));
+      break;
     case 'drone':
       if (args[0] === 'mode') {
         const m = args[1];

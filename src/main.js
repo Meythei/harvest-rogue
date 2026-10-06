@@ -4,6 +4,7 @@ import { loadSprites, drawSprite, itemSpriteKey, assetStatus } from './sprites.j
 import { initAudio, tickAudio, sfx, setAudioEnabled, isAudioEnabled, setCombo } from './audio.js';
 import { Game } from './game.js';
 import { runCommand } from './console.js';
+import { CHARMS, BOSSES, ORACLES, TRAITS, TRAIT_KEYS } from './extras.js';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('game');
@@ -22,6 +23,7 @@ function saveMeta() {
   try { localStorage.setItem(META_KEY, JSON.stringify(meta)); } catch (e) { /* noop */ }
 }
 let meta = loadMeta();
+let trait = 'none';
 
 // ---- 状態 ------------------------------------------------------------------
 let game = null;
@@ -81,13 +83,31 @@ function renderMetaShop() {
   }
 }
 
+function renderTraits() {
+  const wrap = $('trait-buttons');
+  wrap.innerHTML = '';
+  for (const k of TRAIT_KEYS) {
+    const b = document.createElement('button');
+    b.className = trait === k ? 'active' : '';
+    b.textContent = TRAITS[k].name;
+    b.title = TRAITS[k].desc;
+    b.onclick = () => { trait = k; renderTraits(); };
+    wrap.appendChild(b);
+  }
+  const d = document.createElement('div');
+  d.className = 'small';
+  d.style.width = '100%';
+  d.textContent = TRAITS[trait].desc;
+  wrap.appendChild(d);
+}
+
 function startGame(players) {
   initAudio();
-  game = new Game({ playerCount: players, meta });
+  game = new Game({ playerCount: players, meta, trait });
   game.onTerminal = () => openConsole();
   paused = false;
   tool = null; movingBox = null;
-  show('title', false); show('over', false); show('upgrade', false); show('paused', false);
+  show('title', false); show('over', false); show('upgrade', false); show('shop', false); show('paused', false);
   lastSig = {};
   shownState = 'playing';
   buildPlayersPanel();
@@ -98,8 +118,9 @@ function startGame(players) {
 
 function toTitle() {
   game = null;
-  show('over', false); show('upgrade', false);
+  show('over', false); show('upgrade', false); show('shop', false);
   renderMetaShop();
+  renderTraits();
   show('title', true);
   setCombo(0);
 }
@@ -114,6 +135,7 @@ function endRun() {
     ノルマ達成数: <b>${game.quotasCleared}</b><br>
     納品した作物: <b>${game.totalDelivered}</b> 個<br>
     稼いだコイン: <b>${game.totalCoins}</b><br>
+    お守り: <b>${game.charms.map((k) => CHARMS[k].name).join('、') || 'なし'}</b><br>
     最大コンボ: <b>${game.bestCombo}</b><br>
     農地: <b>${FARM_TIERS[game.tech.farm].name}</b><br>
     持ち帰った種籾: <b>+${reward}</b>（合計 ${meta.seeds}）`;
@@ -121,7 +143,15 @@ function endRun() {
   setCombo(0);
 }
 
+function upcomingText() {
+  const u = game.upcoming;
+  if (!u) return '';
+  const boss = u.boss ? ` <span class="boss">ボス「${BOSSES[u.boss].name}」: ${BOSSES[u.boss].desc}</span>` : '';
+  return `次のノルマ: ${CROPS[u.crop].name} ${game.quotaNeed(game.quotaIndex + 1, u.crop)}個${boss}`;
+}
+
 function showUpgrade() {
+  $('upgrade').querySelector('.sub').innerHTML = `アップグレードを1つ選んでください（1〜3キーでも選べます）<br>${upcomingText()}`;
   const wrap = $('upgrade-cards');
   wrap.innerHTML = '';
   game.upgradeOffers.forEach((o, i) => {
@@ -138,6 +168,48 @@ function chooseUpgrade(i) {
   if (!game || game.state !== 'upgrade') return;
   game.chooseUpgrade(i);
   show('upgrade', false);
+  shownState = game.state;
+  showShop();
+  renderToolbar();
+}
+
+// ---- 市場（Balatro 風） ------------------------------------------------------
+function showShop() {
+  $('shop-next').innerHTML = upcomingText();
+  const wrap = $('shop-cards');
+  wrap.innerHTML = '';
+  game.shopOffers.forEach((k, i) => {
+    const c = CHARMS[k];
+    const price = game.charmPrice(k);
+    const b = document.createElement('button');
+    b.className = 'upgrade-card cat-charm';
+    b.disabled = game.coins < price || game.charms.length >= game.charmSlots;
+    b.innerHTML = `<div class="key">${i + 1}</div><div class="t">${c.name}</div><div class="d">${c.desc}</div><div class="price">🪙 ${price}${game.discount ? '（半額）' : ''}</div>`;
+    b.onclick = () => { if (game.buyCharm(i)) showShop(); };
+    wrap.appendChild(b);
+  });
+  if (!game.shopOffers.length) wrap.innerHTML = '<p class="small">売り切れ</p>';
+  const owned = $('shop-owned');
+  owned.innerHTML = '';
+  game.charms.forEach((k) => {
+    const b = document.createElement('button');
+    b.innerHTML = `<b>${CHARMS[k].name}</b> <span class="small">売る +${Math.floor(CHARMS[k].cost / 2)}</span>`;
+    b.title = CHARMS[k].desc;
+    b.onclick = () => { if (game.sellCharm(k)) showShop(); };
+    owned.appendChild(b);
+  });
+  if (!game.charms.length) owned.innerHTML = '<span class="small">まだありません</span>';
+  $('shop-slots').textContent = `${game.charms.length} / ${game.charmSlots}`;
+  $('shop-coins').textContent = `🪙 ${game.coins}`;
+  $('shop-reroll').textContent = `品替え（R） 🪙 ${game.rerollCost}`;
+  $('shop-reroll').disabled = game.coins < game.rerollCost;
+  show('shop', true);
+}
+
+function leaveShop() {
+  if (!game || game.state !== 'shop') return;
+  game.leaveShop();
+  show('shop', false);
   renderToolbar();
 }
 
@@ -171,6 +243,21 @@ function updateHud() {
   $('combo-text').textContent = g.combo ? `${g.combo} ×${g.comboMult().toFixed(2)}` : '—';
   $('combo-bar').style.width = `${g.combo ? (g.comboTimer / g.comboWindow) * 100 : 0}%`;
   document.querySelector('.combo').classList.toggle('hot', g.combo >= 6);
+
+  // 神託・ボス・次のノルマ・お守り
+  const osig = `${g.oracle}|${q.boss}|${g.quotaIndex}|${g.charms.join()}|${g.boardCharges}`;
+  if (changed('info', osig)) {
+    const ot = $('oracle-text');
+    const o = g.oracle && ORACLES[g.oracle];
+    ot.textContent = o ? `${o.name}: ${o.desc}` : '—';
+    ot.className = o ? (o.good ? 'good' : 'bad') : '';
+    const boss = q.boss ? `<span class="boss">ボス「${BOSSES[q.boss].name}」${BOSSES[q.boss].desc}</span> / ` : '';
+    const u = g.upcoming;
+    $('next-text').innerHTML = `${boss}次: ${CROPS[u.crop].name}${u.boss ? `（ボス「${BOSSES[u.boss].name}」）` : ''}`;
+    $('charm-list').innerHTML = g.charms.length
+      ? g.charms.map((k) => `<span class="charm-chip" title="${CHARMS[k].desc}">${CHARMS[k].name}</span>`).join('') + `<span class="small">${g.charms.length}/${g.charmSlots}</span>`
+      : `<span class="small">なし（ノルマ達成後の市場で買える） 0/${g.charmSlots}</span>`;
+  }
 
   const w = g.weather;
   const wkey = w.phase === 'clear' ? 'weather_sunny' : w.kind === 'hail' ? 'weather_hail' : 'weather_storm';
@@ -248,8 +335,8 @@ function renderToolbar() {
     const b = document.createElement('button');
     b.className = tool === type ? 'active' : '';
     b.title = def.desc;
-    b.disabled = game.coins < def.cost;
-    const cost = document.createElement('span'); cost.className = 'cost'; cost.textContent = def.cost;
+    b.disabled = game.coins < game.buildCost(type);
+    const cost = document.createElement('span'); cost.className = 'cost'; cost.textContent = game.buildCost(type);
     b.append(buildingIcon(type), def.name, cost);
     b.onclick = () => selectTool(tool === type ? null : type);
     builds.appendChild(b);
@@ -325,7 +412,17 @@ function renderHelp() {
     '空腹度': '手作業と移動で減る。0になると動きが遅くなり作業できない',
     'コンボ': `納品が途切れずに続くと倍率が上がる。上限は輸送・納品の技術で解放される`,
     'ノルマ': `${DAYS_PER_QUOTA}日（1日${DAY_LENGTH}秒）以内に指定の作物を納品。倍率込みで数える`,
+    '納品の役': '手持ちをまとめて納品すると中身で役が付く。束ね売り(同じ作物5)・盛り合わせ(3種)・フルハウス(3+2)・豊作(同じ作物8)・ダブル収穫(3+3)・八百屋の店先(4種)・大豊作(同じ作物12)・五穀豊穣(5種)',
+    '市場': 'ノルマ達成後にお守りを買える。品替えは1回ごとに値上がり。お守りは半額で売れる',
+    'ボスノルマ': '3つ目ごとのノルマには縛りが付く。前のノルマのうちに予告され、突破すると +40 コイン',
+    '神託': '毎朝1枚。祝福（恵みの雨・黄金の雨など）か呪い（イナゴ・疲労など）がその日だけ起きる',
+    '夜': '1日の終わりに全員の空腹度が8減る',
+    '補給物資': '畑の外にときどき落ちてくる。上を歩くとコイン・作物・電池・お守りのどれかが手に入る',
+    '放射能': '核融合炉の近く（2マス）で熟した作物は巨大化し、収穫数 +1',
+    '混植': '隣に違う作物があると成長 +20%',
   })}</table>
+  <h2>お守り</h2>
+  <table>${rows(Object.fromEntries(Object.values(CHARMS).map((c) => [c.name, `${c.desc}（${c.cost}コイン）`])))}</table>
   <h2>技術ツリー</h2>
   <table>${rows({
     '回収': TECH.collect.join(' → '),
@@ -371,6 +468,12 @@ window.addEventListener('keydown', (e) => {
   }
   if (game.state === 'upgrade') {
     if (['Digit1', 'Digit2', 'Digit3'].includes(e.code)) chooseUpgrade(Number(e.code.slice(-1)) - 1);
+    return;
+  }
+  if (game.state === 'shop') {
+    if (['Digit1', 'Digit2', 'Digit3'].includes(e.code)) { if (game.buyCharm(Number(e.code.slice(-1)) - 1)) showShop(); }
+    else if (e.code === 'KeyR') { if (game.rerollShop()) showShop(); }
+    else if (e.code === 'Enter') { e.preventDefault(); leaveShop(); }
     return;
   }
   if (game.state === 'over') { if (e.code === 'Enter') toTitle(); return; }
@@ -426,6 +529,8 @@ canvas.addEventListener('mousedown', (e) => {
 $('start-1p').onclick = () => startGame(1);
 $('start-2p').onclick = () => startGame(2);
 $('over-back').onclick = toTitle;
+$('shop-reroll').onclick = () => { if (game && game.rerollShop()) showShop(); };
+$('shop-leave').onclick = leaveShop;
 $('help-close').onclick = () => toggleHelp(false);
 $('btn-help').onclick = () => toggleHelp();
 $('btn-console').onclick = openConsole;
@@ -481,6 +586,7 @@ loadSprites(new URLSearchParams(location.search).get('assets') !== 'off').then((
   $('asset-status').textContent = assetStatus.loaded ? `（${assetStatus.loaded}/${assetStatus.total} 点を読み込み済み）` : '（代替のドット絵で表示中）';
 });
 renderMetaShop();
+renderTraits();
 requestAnimationFrame(frame);
 
 // デバッグ用（ブラウザのコンソールから参照できるように）
