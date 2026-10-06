@@ -1,0 +1,1181 @@
+// ゲーム本体: シミュレーションと描画
+import {
+  TILE, COLS, ROWS, DAY_LENGTH, DAYS_PER_QUOTA, CROPS, CROP_ORDER, HUNGER_COST,
+  FARM_TIERS, FARM_ORIGIN, TECH, BUILDINGS, DIRS,
+} from './data.js';
+import { drawSprite, drawTile, drawSprout, itemSpriteKey } from './sprites.js';
+import { sfx, setCombo } from './audio.js';
+
+const W = COLS * TILE;
+const H = ROWS * TILE;
+const BLOCKS_PLAYER = new Set(['wall', 'fan', 'bike', 'biomass', 'fusion', 'pylon', 'collector', 'drone', 'board', 'box', 'terminal', 'wireless']);
+const BLOCKS_ITEM = new Set(['wall', 'fan', 'bike', 'fusion', 'pylon', 'drone', 'terminal']);
+const CONVEYORS = { belt: 1.6, pipe: 4.5 }; // マス/秒
+const BOX_LIMIT = 3;
+const DRONE_CAP = 6;
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const tileOf = (px) => Math.floor(px / TILE);
+const center = (t) => t * TILE + TILE / 2;
+
+let nextId = 1;
+
+export class Game {
+  constructor({ playerCount = 1, meta = { perks: {} } } = {}) {
+    const perks = meta.perks || {};
+    this.tiles = [];
+    for (let y = 0; y < ROWS; y++) {
+      const row = [];
+      for (let x = 0; x < COLS; x++) row.push({ soil: false, crop: null, flower: Math.random() < 0.08 });
+      this.tiles.push(row);
+    }
+    this.bAt = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+    this.buildings = [];
+    this.items = [];
+    this.drones = [];
+    this.particles = [];
+    this.floaters = [];
+    this.hail = [];
+    this.log = [];
+
+    this.tech = {
+      collect: perks.handy ? 2 : 1,
+      transport: 1,
+      deliver: 1,
+      energy: perks.bike ? 1 : 0,
+      farm: perks.garden ? 1 : 0,
+    };
+    this.unlocks = { pylon: false, board: false, warp: false };
+    this.crops = ['ninjin', 'kabu'];
+    this.slots = [];
+    this.comboWindow = 5 + (perks.rhythm || 0);
+    this.combo = 0;
+    this.comboTimer = 0;
+    this.bestCombo = 0;
+    this.coins = 30 + 40 * (perks.coins || 0);
+    this.power = 0;
+    this.powered = false;
+    this.pylonPowered = false;
+    this.droneMode = 'deliver';
+    this.invCap = 12;
+    this.seed = 'ninjin';
+
+    this.t = 0;
+    this.quotaIndex = 0;
+    this.quotasCleared = 0;
+    this.totalDelivered = 0;
+    this.totalCoins = 0;
+    this.state = 'playing'; // playing | upgrade | over
+    this.pendingUpgrade = false;
+
+    this.weather = { phase: 'clear', kind: null, timer: 30, cx: 0, cy: 0, r: 0, wind: { x: 1, y: 0 }, flash: 0 };
+
+    this.players = [];
+    this.place('terminal', 22, 1, 0, true);
+    this.place('box', 21, 4, 0, true);
+
+    const maxHunger = 100 + 20 * (perks.stomach || 0);
+    for (let i = 0; i < playerCount; i++) {
+      this.players.push({
+        id: i, x: center(19), y: center(4 + i * 2), dir: 2, hunger: maxHunger, maxHunger,
+        inv: ['ninjin', 'ninjin'], moving: false, anim: 0, warpCd: 0,
+        input: { up: false, down: false, left: false, right: false },
+      });
+    }
+    this.startQuota();
+    this.say('農場管理端末に接続しました。ノルマを確認してください。');
+  }
+
+  // ---- 基本情報 ------------------------------------------------------------
+
+  farmRect() {
+    const f = FARM_TIERS[this.tech.farm];
+    return { x: FARM_ORIGIN.x, y: FARM_ORIGIN.y, w: f.w, h: f.h };
+  }
+
+  inFarm(x, y) {
+    const r = this.farmRect();
+    return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
+  }
+
+  inBounds(x, y) { return x >= 0 && y >= 0 && x < COLS && y < ROWS; }
+
+  powerCap() { return 100 + this.tech.energy * 100; }
+
+  comboCap() { return 10 + (this.tech.transport - 1) * 10 + (this.tech.deliver - 1) * 5; }
+
+  comboMult() { return 1 + Math.min(this.combo, this.comboCap()) * 0.05; }
+
+  slotMult(type, crop) {
+    let m = 1;
+    for (const s of this.slots) if (s.type === type && (!s.crop || s.crop === crop)) m *= s.mult;
+    return m;
+  }
+
+  say(msg) {
+    this.log.push({ t: this.t, msg });
+    if (this.log.length > 60) this.log.shift();
+  }
+
+  floater(x, y, text, color = '#fff') { this.floaters.push({ x, y, text, color, life: 1.2 }); }
+
+  burst(x, y, color, n = 8) {
+    for (let i = 0; i < n; i++) {
+      this.particles.push({ x, y, vx: rand(-80, 80), vy: rand(-120, -20), life: rand(0.3, 0.7), color, size: rand(2, 4) });
+    }
+  }
+
+  // ---- ノルマ --------------------------------------------------------------
+
+  startQuota() {
+    const q = this.quotaIndex;
+    const crop = q === 0 ? 'ninjin' : pick(this.crops);
+    const need = Math.max(3, Math.round(6 * Math.pow(1.55, q) * Math.sqrt(16 / CROPS[crop].grow)));
+    this.quota = { crop, need, have: 0, start: this.t, end: this.t + DAYS_PER_QUOTA * DAY_LENGTH };
+    this.weather = { ...this.weather, phase: 'clear', timer: q === 0 ? 9999 : rand(12, 30) };
+    this.say(`新しいノルマ: ${DAYS_PER_QUOTA}日以内に${CROPS[crop].name}を${need}個納品`);
+  }
+
+  quotaDay() { return Math.min(DAYS_PER_QUOTA, Math.floor((this.t - this.quota.start) / DAY_LENGTH) + 1); }
+
+  quotaRemaining() { return Math.max(0, this.quota.end - this.t); }
+
+  // ---- 建物 ----------------------------------------------------------------
+
+  isUnlocked(type) {
+    const req = BUILDINGS[type].req;
+    if (req.unlock) return this.unlocks[req.unlock];
+    return Object.entries(req).every(([k, v]) => this.tech[k] >= v);
+  }
+
+  canPlace(type, x, y) {
+    if (!this.inBounds(x, y) || this.bAt[y][x]) return false;
+    if (this.tiles[y][x].crop) return false;
+    if (type === 'box' && this.buildings.filter((b) => b.type === 'box').length >= BOX_LIMIT) return false;
+    for (const p of this.players) {
+      if (BLOCKS_PLAYER.has(type) && tileOf(p.x) === x && tileOf(p.y) === y) return false;
+    }
+    return true;
+  }
+
+  place(type, x, y, dir = 0, free = false) {
+    if (!this.canPlace(type, x, y)) return null;
+    const cost = free ? 0 : BUILDINGS[type]?.cost || 0;
+    if (this.coins < cost) return null;
+    this.coins -= cost;
+    const b = { id: nextId++, type, x, y, dir, fuel: 0, burn: 0, store: [], cd: 0, anim: 0 };
+    if (type === 'warp') {
+      const lone = this.buildings.find((o) => o.type === 'warp' && !o.pair);
+      if (lone) { lone.pair = b; b.pair = lone; }
+    }
+    this.buildings.push(b);
+    this.bAt[y][x] = b;
+    return b;
+  }
+
+  build(type, x, y, dir) {
+    if (!this.isUnlocked(type)) return false;
+    if (this.coins < BUILDINGS[type].cost) { this.floater(center(x), center(y), 'コイン不足', '#ff8080'); sfx('deny'); return false; }
+    const b = this.place(type, x, y, BUILDINGS[type].rotate ? dir : 0);
+    if (!b) { sfx('deny'); return false; }
+    sfx('build');
+    this.burst(center(x), center(y), '#ddd', 6);
+    return true;
+  }
+
+  demolish(x, y) {
+    const b = this.inBounds(x, y) && this.bAt[y][x];
+    if (!b || b.type === 'terminal') return false;
+    if (b.type === 'box' && this.buildings.filter((o) => o.type === 'box').length <= 1) {
+      this.floater(center(x), center(y), '最後の納品ボックスは壊せない', '#ff8080');
+      return false;
+    }
+    this.coins += Math.floor((BUILDINGS[b.type]?.cost || 0) / 2);
+    for (const c of b.store) this.spawnItem(c, center(x), center(y));
+    if (b.pair) b.pair.pair = null;
+    if (b.type === 'drone') this.drones = this.drones.filter((d) => d.station !== b);
+    this.buildings = this.buildings.filter((o) => o !== b);
+    this.bAt[y][x] = null;
+    sfx('till');
+    return true;
+  }
+
+  moveBox(box, x, y) {
+    if (!box || box.type !== 'box' || this.tech.deliver < 2) return false;
+    this.bAt[box.y][box.x] = null;
+    if (!this.canPlace('box', x, y) && !(x === box.x && y === box.y)) {
+      // canPlace は自分自身を数えるので、移動時は数の制限を無視する
+      const free = this.inBounds(x, y) && !this.bAt[y][x] && !this.tiles[y][x].crop;
+      if (!free) { this.bAt[box.y][box.x] = box; sfx('deny'); return false; }
+    }
+    box.x = x; box.y = y;
+    this.bAt[y][x] = box;
+    sfx('build');
+    return true;
+  }
+
+  nearest(type, x, y) {
+    let best = null, bd = Infinity;
+    for (const b of this.buildings) {
+      if (b.type !== type) continue;
+      const d = (center(b.x) - x) ** 2 + (center(b.y) - y) ** 2;
+      if (d < bd) { bd = d; best = b; }
+    }
+    return best;
+  }
+
+  // ---- 作物・アイテム ------------------------------------------------------
+
+  spawnItem(crop, x, y, extra = {}) {
+    const it = { id: nextId++, crop, x, y, vx: rand(-40, 40), vy: rand(-40, 40), state: 'ground', cut: false, lastTile: null, cd: 0, age: 0, ...extra };
+    this.items.push(it);
+    return it;
+  }
+
+  removeItem(it) { it.dead = true; }
+
+  deliver(crop, x, y) {
+    const mult = this.comboMult() * this.slotMult('deliver', crop);
+    this.combo++;
+    this.bestCombo = Math.max(this.bestCombo, this.combo);
+    this.comboTimer = this.comboWindow;
+    setCombo(this.combo);
+    const coins = Math.max(1, Math.round(CROPS[crop].value * mult));
+    this.coins += coins;
+    this.totalCoins += coins;
+    this.totalDelivered++;
+    if (crop === this.quota.crop) this.quota.have += mult;
+    this.floater(x, y - 10, `+${coins}`, crop === this.quota.crop ? '#ffe066' : '#fff');
+    sfx('deliver');
+  }
+
+  isProtected(x, y) {
+    if (!this.pylonPowered) return false;
+    return this.buildings.some((b) => b.type === 'pylon' && (b.x - x) ** 2 + (b.y - y) ** 2 <= 9.5);
+  }
+
+  // ---- プレイヤー操作 ------------------------------------------------------
+
+  facingTile(p) {
+    const d = DIRS[p.dir];
+    return { x: tileOf(p.x + d.x * TILE * 0.75), y: tileOf(p.y + d.y * TILE * 0.75) };
+  }
+
+  // essential な作業（収穫・拾う・納品）は空腹度0でも行える。詰み防止のため
+  spend(p, amount, essential = false) {
+    if (p.hunger <= 0 && amount > 0 && !essential) {
+      this.floater(p.x, p.y - 30, 'お腹が空いて動けない…', '#ff9090');
+      sfx('deny');
+      return false;
+    }
+    p.hunger = Math.max(0, p.hunger - amount);
+    return true;
+  }
+
+  action(pi) {
+    const p = this.players[pi];
+    if (!p || this.state !== 'playing') return;
+    const { x, y } = this.facingTile(p);
+    if (!this.inBounds(x, y)) return;
+    const b = this.bAt[y][x];
+    if (b) return this.interact(p, b);
+
+    // 手作業で拾う
+    const near = this.items.filter((it) => it.state === 'ground' && !it.dead
+      && Math.hypot(it.x - center(x), it.y - center(y)) < TILE * 0.9);
+    if (near.length && p.inv.length < this.invCap) {
+      const cost = this.pickupCost();
+      for (const it of near) {
+        if (p.inv.length >= this.invCap) break;
+        if (!this.spend(p, cost, true)) break;
+        p.inv.push(it.crop);
+        this.removeItem(it);
+      }
+      sfx('pickup');
+      return;
+    }
+
+    const tile = this.tiles[y][x];
+    if (tile.crop) {
+      if (tile.crop.ripe) {
+        if (!this.spend(p, HUNGER_COST.harvest, true)) return;
+        const c = tile.crop.kind;
+        tile.crop = null;
+        for (let i = 0; i < CROPS[c].yield; i++) this.spawnItem(c, center(x) + rand(-6, 6), center(y) + rand(-6, 6));
+        this.burst(center(x), center(y), CROPS[c].color, 6);
+        sfx('harvest');
+      }
+      return;
+    }
+    if (tile.soil) {
+      if (!this.spend(p, HUNGER_COST.plant)) return;
+      tile.crop = { kind: this.seed, t: 0, ripe: false };
+      sfx('plant');
+      return;
+    }
+    if (this.inFarm(x, y)) {
+      if (!this.spend(p, HUNGER_COST.till)) return;
+      tile.soil = true;
+      this.burst(center(x), center(y), '#8b5a2b', 6);
+      sfx('till');
+    }
+  }
+
+  pickupCost() { return this.tech.collect >= 3 ? 0 : this.tech.collect === 2 ? 0.2 : HUNGER_COST.pickup; }
+
+  interact(p, b) {
+    const cx = center(b.x), cy = center(b.y);
+    switch (b.type) {
+      case 'box': {
+        if (!p.inv.length) { this.floater(cx, cy, '手持ちが空です', '#ccc'); return; }
+        if (!this.spend(p, HUNGER_COST.deliver, true)) return;
+        // 手持ちを全部納品する（食べる分は先に食べておく）
+        p.inv.splice(0).forEach((c, i) => this.deliver(c, cx + rand(-8, 8), cy - i * 6));
+        return;
+      }
+      case 'bike': {
+        if (this.power >= this.powerCap()) { this.floater(cx, cy, '満タン', '#ccc'); return; }
+        if (!this.spend(p, HUNGER_COST.pump)) return;
+        this.power = Math.min(this.powerCap(), this.power + 4);
+        b.anim += 1;
+        this.floater(cx, cy - 10, '+4⚡', '#ffe066');
+        sfx('pump');
+        return;
+      }
+      case 'biomass': {
+        const idx = this.pickFuel(p.inv);
+        if (idx < 0) { this.floater(cx, cy, '燃やす作物がない', '#ccc'); return; }
+        const c = p.inv.splice(idx, 1)[0];
+        b.fuel += CROPS[c].fuel;
+        this.burst(cx, cy, '#ff9a3c', 8);
+        sfx('burn');
+        return;
+      }
+      case 'board': {
+        const idx = p.inv.findIndex(() => true);
+        if (idx < 0) { this.floater(cx, cy, '切る作物がない', '#ccc'); return; }
+        if (p.inv.length >= this.invCap) { this.floater(cx, cy, '手持ちがいっぱい', '#ccc'); return; }
+        if (!this.spend(p, HUNGER_COST.cut)) return;
+        p.inv.push(p.inv[idx]);
+        this.floater(cx, cy, '×2', '#9fe870');
+        sfx('cut');
+        return;
+      }
+      case 'collector': {
+        while (b.store.length && p.inv.length < this.invCap) p.inv.push(b.store.pop());
+        sfx('pickup');
+        return;
+      }
+      case 'terminal':
+        this.onTerminal?.();
+        return;
+      default:
+        return;
+    }
+  }
+
+  // ノルマ対象以外で燃料効率の良いものから燃やす
+  pickFuel(inv) {
+    let best = -1, score = -Infinity;
+    inv.forEach((c, i) => {
+      const s = CROPS[c].fuel - (c === this.quota.crop ? 100 : 0);
+      if (s > score) { score = s; best = i; }
+    });
+    return best;
+  }
+
+  eat(pi) {
+    const p = this.players[pi];
+    if (!p || this.state !== 'playing' || !p.inv.length) return;
+    if (p.hunger >= p.maxHunger - 1) { this.floater(p.x, p.y - 30, 'お腹いっぱい', '#ccc'); return; }
+    // ノルマ対象以外を優先して食べる
+    let idx = p.inv.findIndex((c) => c !== this.quota.crop);
+    if (idx < 0) idx = 0;
+    const c = p.inv.splice(idx, 1)[0];
+    p.hunger = Math.min(p.maxHunger, p.hunger + CROPS[c].food);
+    this.floater(p.x, p.y - 30, `+${CROPS[c].food} 空腹度`, '#9fe870');
+    sfx('eat');
+  }
+
+  // ---- 更新 ----------------------------------------------------------------
+
+  update(dt) {
+    if (this.state !== 'playing') return;
+    this.t += dt;
+    this.updatePower(dt);
+    this.updatePlayers(dt);
+    this.updateCrops(dt);
+    this.updateBuildings(dt);
+    this.updateItems(dt);
+    this.updateDrones(dt);
+    this.updateWeather(dt);
+    this.updateCombo(dt);
+    this.updateEffects(dt);
+    this.checkQuota();
+  }
+
+  updatePower(dt) {
+    let demand = 0;
+    for (const b of this.buildings) demand += (BUILDINGS[b.type]?.power || 0) * dt;
+    this.powered = this.power >= demand && this.power > 0;
+    if (this.powered) this.power -= demand;
+    for (const b of this.buildings) {
+      if (b.type === 'fusion') this.power += 6 * dt;
+      if (b.type === 'biomass' && (b.fuel > 0 || b.burn > 0)) {
+        if (b.burn <= 0) { b.fuel -= 1; b.burn = 3; }
+        b.burn -= dt;
+        this.power += 4 * dt;
+        if (Math.random() < dt * 8) this.particles.push({ x: center(b.x) + rand(-6, 6), y: center(b.y) - 14, vx: rand(-10, 10), vy: -40, life: 0.6, color: '#888a', size: 4 });
+      }
+    }
+    // パイロンは悪天候のときだけ電力を使う
+    const pylons = this.buildings.filter((b) => b.type === 'pylon').length;
+    if (this.weather.phase === 'active' && pylons) {
+      const need = pylons * 1.2 * dt;
+      this.pylonPowered = this.power >= need;
+      if (this.pylonPowered) this.power -= need;
+    } else this.pylonPowered = pylons > 0;
+    this.power = clamp(this.power, 0, this.powerCap());
+  }
+
+  updatePlayers(dt) {
+    for (const p of this.players) {
+      p.warpCd = Math.max(0, p.warpCd - dt);
+      let dx = (p.input.right ? 1 : 0) - (p.input.left ? 1 : 0);
+      let dy = (p.input.down ? 1 : 0) - (p.input.up ? 1 : 0);
+      p.moving = dx !== 0 || dy !== 0;
+      if (p.moving) {
+        if (Math.abs(dx) >= Math.abs(dy)) p.dir = dx > 0 ? 0 : 2; else p.dir = dy > 0 ? 1 : 3;
+        const len = Math.hypot(dx, dy);
+        dx /= len; dy /= len;
+        const speed = TILE * 4.2 * (p.hunger <= 0 ? 0.45 : 1);
+        const ox = p.x, oy = p.y;
+        this.movePlayer(p, dx * speed * dt, 0);
+        this.movePlayer(p, 0, dy * speed * dt);
+        const dist = Math.hypot(p.x - ox, p.y - oy) / TILE;
+        p.hunger = Math.max(0, p.hunger - dist * (HUNGER_COST.movePerTile + HUNGER_COST.carryPerTilePerItem * p.inv.length));
+        p.anim += dt * 10;
+      }
+      // ワープゲート
+      const b = this.bAt[tileOf(p.y)]?.[tileOf(p.x)];
+      if (b && b.type === 'warp' && b.pair && p.warpCd <= 0) {
+        p.x = center(b.pair.x); p.y = center(b.pair.y);
+        p.warpCd = 1;
+        sfx('warp');
+        this.burst(p.x, p.y, '#b48cff', 12);
+      }
+      this.collectAround(p, dt);
+    }
+  }
+
+  movePlayer(p, dx, dy) {
+    const r = 11;
+    const nx = p.x + dx, ny = p.y + dy;
+    const corners = [[nx - r, ny - r], [nx + r, ny - r], [nx - r, ny + r], [nx + r, ny + r]];
+    for (const [cx, cy] of corners) {
+      const tx = tileOf(cx), ty = tileOf(cy);
+      if (!this.inBounds(tx, ty)) return;
+      const b = this.bAt[ty][tx];
+      if (b && BLOCKS_PLAYER.has(b.type)) return;
+    }
+    p.x = nx; p.y = ny;
+  }
+
+  collectAround(p, dt) {
+    const tier = this.tech.collect;
+    if (tier < 2) return;
+    const full = p.inv.length >= this.invCap;
+    for (const it of this.items) {
+      if (it.dead || full) continue;
+      if (it.state === 'orbit' && it.owner === p) continue;
+      if (it.state !== 'ground') continue;
+      const d = Math.hypot(it.x - p.x, it.y - p.y);
+      if (tier === 2 && d < TILE * 0.6) {
+        p.hunger = Math.max(0, p.hunger - this.pickupCost());
+        p.inv.push(it.crop); this.removeItem(it); sfx('pickup');
+        if (p.inv.length >= this.invCap) break;
+      } else if (tier >= 3 && d < TILE * 2.6) {
+        // 回転しながら吸い寄せられる演出
+        it.state = 'orbit';
+        it.owner = p;
+        it.ang = Math.atan2(it.y - p.y, it.x - p.x);
+        it.r = d;
+      }
+    }
+    // 回転中のアイテム
+    for (const it of this.items) {
+      if (it.dead || it.state !== 'orbit' || it.owner !== p) continue;
+      it.ang += dt * 9;
+      it.r -= dt * TILE * 2.2;
+      it.x = p.x + Math.cos(it.ang) * Math.max(0, it.r);
+      it.y = p.y - 8 + Math.sin(it.ang) * Math.max(0, it.r) * 0.6;
+      if (it.r <= 4) {
+        if (p.inv.length < this.invCap) { p.inv.push(it.crop); this.removeItem(it); sfx('pickup'); }
+        else { it.state = 'ground'; it.vx = it.vy = 0; }
+      }
+    }
+  }
+
+  updateCrops(dt) {
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const c = this.tiles[y][x].crop;
+        if (!c || c.ripe) continue;
+        c.t += dt * this.slotMult('growth', c.kind);
+        if (c.t >= CROPS[c.kind].grow) { c.ripe = true; this.burst(center(x), center(y), '#fff8', 3); }
+      }
+    }
+  }
+
+  updateBuildings(dt) {
+    for (const b of this.buildings) {
+      b.cd -= dt;
+      if (b.type === 'fan') this.fanPush(b, dt);
+      if (b.type === 'collector') this.collectorTick(b, dt);
+      if (b.type === 'drone' && !this.drones.some((d) => d.station === b)) {
+        this.drones.push({ station: b, x: center(b.x), y: center(b.y), carry: [], target: null, dest: null, bob: Math.random() * 6 });
+      }
+      if (b.type === 'belt' || b.type === 'pipe') { if (this.powered) b.anim += dt * CONVEYORS[b.type]; }
+      if (b.type === 'fan' || b.type === 'fusion') b.anim += dt;
+    }
+  }
+
+  fanPush(b, dt) {
+    const d = DIRS[b.dir];
+    const reach = [];
+    for (let i = 1; i <= 5; i++) {
+      const x = b.x + d.x * i, y = b.y + d.y * i;
+      if (!this.inBounds(x, y)) break;
+      const o = this.bAt[y][x];
+      if (o && BLOCKS_ITEM.has(o.type)) break;
+      reach.push(`${x},${y}`);
+    }
+    for (const it of this.items) {
+      if (it.dead || it.state !== 'ground') continue;
+      if (!reach.includes(`${tileOf(it.x)},${tileOf(it.y)}`)) continue;
+      it.vx += d.x * 420 * dt; it.vy += d.y * 420 * dt;
+      // 風の軸に寄せる
+      if (d.x) it.vy += (center(b.y) - it.y) * 3 * dt; else it.vx += (center(b.x) - it.x) * 3 * dt;
+      const sp = Math.hypot(it.vx, it.vy);
+      if (sp > 170) { it.vx *= 170 / sp; it.vy *= 170 / sp; }
+    }
+    if (Math.random() < dt * 6) {
+      this.particles.push({ x: center(b.x) + d.x * 14, y: center(b.y) + d.y * 14, vx: d.x * 160, vy: d.y * 160, life: 0.5, color: '#ffffff66', size: 2 });
+    }
+  }
+
+  collectorTick(b, dt) {
+    const cx = center(b.x), cy = center(b.y);
+    if (this.powered) {
+      for (const it of this.items) {
+        if (it.dead || it.state !== 'ground' || b.store.length >= 30) continue;
+        const d = Math.hypot(it.x - cx, it.y - cy);
+        if (d < TILE * 3.2) { it.state = 'suck'; it.target = b; }
+      }
+    }
+    if (b.cd <= 0 && b.store.length && this.powered) {
+      b.cd = 0.35;
+      const d = DIRS[b.dir];
+      const ox = b.x + d.x, oy = b.y + d.y;
+      if (!this.inBounds(ox, oy)) return;
+      const o = this.bAt[oy][ox];
+      if (o && o.type === 'box') { this.deliver(b.store.pop(), center(ox), center(oy)); return; }
+      if (o && BLOCKS_ITEM.has(o.type)) return;
+      if (this.items.some((it) => !it.dead && it.state === 'ground' && tileOf(it.x) === ox && tileOf(it.y) === oy && Math.hypot(it.x - center(ox), it.y - center(oy)) < 14)) return;
+      const it = this.spawnItem(b.store.pop(), center(ox) - d.x * 12, center(oy) - d.y * 12, { vx: d.x * 60, vy: d.y * 60, noSuck: 1 });
+      it.lastTile = `${ox},${oy}`;
+    }
+  }
+
+  updateItems(dt) {
+    const storm = this.weather.phase === 'active' && this.weather.kind === 'storm';
+    for (const it of this.items) {
+      if (it.dead) continue;
+      it.age += dt;
+      it.cd = Math.max(0, it.cd - dt);
+      if (it.noSuck) it.noSuck = Math.max(0, it.noSuck - dt);
+      if (it.state === 'orbit' || it.state === 'carried') continue;
+      if (it.state === 'suck') {
+        const b = it.target;
+        if (!this.buildings.includes(b)) { it.state = 'ground'; continue; }
+        const tx = center(b.x), ty = center(b.y);
+        const d = Math.hypot(tx - it.x, ty - it.y);
+        if (d < 8) { b.store.push(it.crop); this.removeItem(it); continue; }
+        it.x += (tx - it.x) / d * 200 * dt; it.y += (ty - it.y) / d * 200 * dt;
+        continue;
+      }
+      const tx = tileOf(it.x), ty = tileOf(it.y);
+      const here = this.inBounds(tx, ty) ? this.bAt[ty][tx] : null;
+      let onConveyor = false;
+      if (here && CONVEYORS[here.type] && this.powered) {
+        const d = DIRS[here.dir];
+        const sp = CONVEYORS[here.type] * TILE;
+        it.vx = d.x * sp; it.vy = d.y * sp;
+        if (d.x) it.y += (center(ty) - it.y) * Math.min(1, 10 * dt); else it.x += (center(tx) - it.x) * Math.min(1, 10 * dt);
+        onConveyor = true;
+      } else if (here && CONVEYORS[here.type]) {
+        it.vx = 0; it.vy = 0;
+      } else {
+        const f = Math.max(0, 1 - 3.5 * dt);
+        it.vx *= f; it.vy *= f;
+      }
+      it.onConveyor = onConveyor;
+      if (storm && !onConveyor) { it.vx += this.weather.wind.x * 160 * dt; it.vy += this.weather.wind.y * 160 * dt; }
+      // 移動と衝突
+      let nx = it.x + it.vx * dt, ny = it.y + it.vy * dt;
+      if (this.itemBlocked(nx, it.y)) { nx = it.x; it.vx = 0; }
+      if (this.itemBlocked(nx, ny)) { ny = it.y; it.vy = 0; }
+      it.x = clamp(nx, 6, W - 6); it.y = clamp(ny, 6, H - 6);
+      const key = `${tileOf(it.x)},${tileOf(it.y)}`;
+      if (key !== it.lastTile) {
+        it.lastTile = key;
+        this.itemEnter(it);
+      }
+    }
+    this.items = this.items.filter((it) => !it.dead);
+  }
+
+  itemBlocked(x, y) {
+    const tx = tileOf(x), ty = tileOf(y);
+    if (!this.inBounds(tx, ty)) return true;
+    const b = this.bAt[ty][tx];
+    return !!(b && BLOCKS_ITEM.has(b.type));
+  }
+
+  itemEnter(it) {
+    const tx = tileOf(it.x), ty = tileOf(it.y);
+    const b = this.bAt[ty]?.[tx];
+    if (!b) return;
+    const cx = center(tx), cy = center(ty);
+    switch (b.type) {
+      case 'box': this.deliver(it.crop, cx, cy); this.removeItem(it); break;
+      case 'biomass': b.fuel += CROPS[it.crop].fuel; this.removeItem(it); this.burst(cx, cy, '#ff9a3c', 4); break;
+      case 'wireless':
+        if (this.power >= 2) {
+          this.power -= 2;
+          const box = this.nearest('box', cx, cy);
+          this.deliver(it.crop, box ? center(box.x) : cx, box ? center(box.y) : cy);
+          this.removeItem(it);
+          this.burst(cx, cy, '#7fd4ff', 6);
+        }
+        break;
+      case 'board':
+        if (!it.cut) {
+          it.cut = true;
+          this.spawnItem(it.crop, it.x, it.y, { vx: it.vx, vy: it.vy, cut: true, lastTile: it.lastTile });
+          sfx('cut');
+        }
+        break;
+      case 'collector':
+        if (!it.noSuck && b.store.length < 30) { b.store.push(it.crop); this.removeItem(it); }
+        break;
+      case 'warp':
+        if (b.pair && it.cd <= 0) {
+          it.x = center(b.pair.x); it.y = center(b.pair.y);
+          it.cd = 0.6;
+          it.lastTile = `${b.pair.x},${b.pair.y}`;
+          this.burst(it.x, it.y, '#b48cff', 5);
+        }
+        break;
+      default: break;
+    }
+  }
+
+  updateDrones(dt) {
+    for (const d of this.drones) {
+      d.bob += dt * 6;
+      const speed = TILE * (this.powered ? 3.6 : 1.2);
+      if (!d.dest) {
+        if (d.carry.length >= DRONE_CAP) d.dest = this.droneDest(d);
+        else {
+          if (!d.target || d.target.dead || d.target.state !== 'ground') d.target = this.droneTarget(d);
+          if (d.target) {
+            if (this.flyTo(d, d.target.x, d.target.y, speed, dt)) {
+              d.carry.push(d.target.crop);
+              this.removeItem(d.target);
+              d.target = null;
+            }
+          } else if (d.carry.length) d.dest = this.droneDest(d);
+          else this.flyTo(d, center(d.station.x), center(d.station.y) - 10, speed, dt);
+        }
+      }
+      if (d.dest) {
+        if (!this.buildings.includes(d.dest)) { d.dest = null; continue; }
+        if (this.flyTo(d, center(d.dest.x), center(d.dest.y), speed, dt)) {
+          const dest = d.dest;
+          for (const c of d.carry) {
+            if (dest.type === 'box') this.deliver(c, center(dest.x), center(dest.y));
+            else if (dest.type === 'biomass') dest.fuel += CROPS[c].fuel;
+            else if (dest.type === 'collector') dest.store.push(c);
+          }
+          d.carry = [];
+          d.dest = null;
+        }
+      }
+    }
+  }
+
+  droneTarget(d) {
+    const taken = new Set(this.drones.filter((o) => o !== d && o.target).map((o) => o.target));
+    let best = null, bd = Infinity;
+    for (const it of this.items) {
+      if (it.dead || it.state !== 'ground' || it.onConveyor || taken.has(it)) continue;
+      const dist = (it.x - d.x) ** 2 + (it.y - d.y) ** 2;
+      if (dist < bd) { bd = dist; best = it; }
+    }
+    return best;
+  }
+
+  droneDest(d) {
+    const type = this.droneMode === 'burn' ? 'biomass' : this.droneMode === 'store' ? 'collector' : 'box';
+    return this.nearest(type, d.x, d.y) || this.nearest('box', d.x, d.y);
+  }
+
+  flyTo(d, tx, ty, speed, dt) {
+    const dist = Math.hypot(tx - d.x, ty - d.y);
+    if (dist < 6) return true;
+    const s = Math.min(dist, speed * dt);
+    d.x += (tx - d.x) / dist * s;
+    d.y += (ty - d.y) / dist * s;
+    return false;
+  }
+
+  updateWeather(dt) {
+    const w = this.weather;
+    w.flash = Math.max(0, w.flash - dt);
+    w.timer -= dt;
+    if (w.phase === 'clear' && w.timer <= 0) {
+      const r = this.farmRect();
+      w.kind = Math.random() < 0.6 ? 'hail' : 'storm';
+      w.cx = rand(r.x, r.x + r.w); w.cy = rand(r.y, r.y + r.h);
+      w.r = 2.5 + Math.min(3, this.quotaIndex * 0.3);
+      const a = pick(DIRS); w.wind = { x: a.x, y: a.y };
+      w.phase = 'warning'; w.timer = 5;
+      this.say(w.kind === 'hail' ? '雹の予報。パイロンで守るか、急いで収穫を。' : '嵐が近づいています。地面の作物が流されます。');
+      sfx('warn');
+    } else if (w.phase === 'warning' && w.timer <= 0) {
+      w.phase = 'active'; w.timer = w.kind === 'hail' ? 8 : 10; w.tick = 0;
+    } else if (w.phase === 'active') {
+      w.tick -= dt;
+      if (w.kind === 'hail' && Math.random() < dt * 30) {
+        const a = rand(0, Math.PI * 2), rr = Math.sqrt(Math.random()) * w.r;
+        this.hail.push({ x: (w.cx + Math.cos(a) * rr) * TILE, y: (w.cy + Math.sin(a) * rr) * TILE, h: 120, life: 1 });
+      }
+      if (w.kind === 'storm' && Math.random() < dt * 0.6) w.flash = 0.15;
+      if (w.tick <= 0) {
+        w.tick = 1;
+        this.damageCrops();
+      }
+      if (w.timer <= 0) { w.phase = 'clear'; w.timer = rand(22, 40); this.say('天候が回復しました。'); }
+    }
+    for (const h of this.hail) { h.h -= dt * 400; if (h.h <= 0) h.life -= dt * 3; }
+    this.hail = this.hail.filter((h) => h.life > 0);
+  }
+
+  damageCrops() {
+    const w = this.weather;
+    let lost = 0;
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const t = this.tiles[y][x];
+        if (!t.crop) continue;
+        const inArea = w.kind === 'storm' || (x + 0.5 - w.cx) ** 2 + (y + 0.5 - w.cy) ** 2 <= w.r * w.r;
+        if (!inArea) continue;
+        if (this.isProtected(x, y)) continue;
+        const chance = w.kind === 'hail' ? 0.3 : 0.06;
+        if (Math.random() < chance) {
+          this.burst(center(x), center(y), CROPS[t.crop.kind].color, 5);
+          t.crop = null;
+          lost++;
+        }
+      }
+    }
+    if (lost) { sfx('hit'); this.floater(w.cx * TILE, w.cy * TILE, `作物 -${lost}`, '#ff8080'); }
+  }
+
+  updateCombo(dt) {
+    if (this.combo > 0) {
+      this.comboTimer -= dt;
+      if (this.comboTimer <= 0) {
+        if (this.combo >= 3) this.say(`コンボ ${this.combo} で途切れました`);
+        this.combo = 0;
+        setCombo(0);
+      }
+    }
+  }
+
+  updateEffects(dt) {
+    for (const p of this.particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 200 * dt; p.life -= dt; }
+    this.particles = this.particles.filter((p) => p.life > 0);
+    for (const f of this.floaters) { f.y -= 30 * dt; f.life -= dt; }
+    this.floaters = this.floaters.filter((f) => f.life > 0);
+  }
+
+  checkQuota() {
+    const q = this.quota;
+    if (q.have >= q.need) {
+      const bonus = Math.round(this.quotaRemaining() * 0.5);
+      this.coins += bonus;
+      this.quotasCleared++;
+      this.say(`ノルマ達成！ 残り時間ボーナス +${bonus} コイン`);
+      sfx('quota');
+      this.state = 'upgrade';
+      this.upgradeOffers = this.makeOffers();
+      return;
+    }
+    if (this.t >= q.end) {
+      this.state = 'over';
+      this.say('ノルマ未達。ラン終了。');
+      sfx('fail');
+    }
+  }
+
+  // ---- アップグレード（ノルマ達成時に3択） ---------------------------------
+
+  makeOffers() {
+    const offers = [];
+    const tech = (key, label) => {
+      const next = this.tech[key] + 1;
+      const names = TECH[key];
+      const idx = key === 'energy' ? next : next - 1;
+      if (idx >= names.length) return;
+      if (key === 'transport' && next >= 3 && this.tech.energy < 1) return;
+      offers.push({ id: key, weight: 3, title: `${label}: ${names[idx]}`, desc: techDesc(key, next), apply: () => { this.tech[key] = next; } });
+    };
+    tech('collect', '回収');
+    tech('transport', '輸送');
+    tech('deliver', '納品');
+    tech('energy', 'エネルギー');
+    if (this.tech.farm < FARM_TIERS.length - 1) {
+      const f = FARM_TIERS[this.tech.farm + 1];
+      offers.push({ id: 'farm', weight: 3, title: `農地拡張: ${f.name}`, desc: `耕せる範囲が ${f.w}×${f.h} マスに広がる`, apply: () => { this.tech.farm++; } });
+    }
+    const locked = CROP_ORDER.filter((c) => !this.crops.includes(c));
+    if (locked.length) {
+      const c = locked[0];
+      offers.push({ id: 'crop', weight: 2, title: `新しい作物: ${CROPS[c].name}`, desc: `成長${CROPS[c].grow}秒・空腹回復${CROPS[c].food}・燃料${CROPS[c].fuel}・価値${CROPS[c].value}`, apply: () => { this.crops.push(c); } });
+    }
+    if (!this.unlocks.pylon && this.quotaIndex >= 0) offers.push({ id: 'pylon', weight: 2, title: '天候防御パイロン', desc: '範囲内の雹や嵐を無効化する設置物を解放', apply: () => { this.unlocks.pylon = true; } });
+    if (!this.unlocks.board) offers.push({ id: 'board', weight: 1, title: 'まな板', desc: '作物を2倍にする加工台を解放', apply: () => { this.unlocks.board = true; } });
+    if (!this.unlocks.warp && this.quotaIndex >= 2) offers.push({ id: 'warp', weight: 1, title: 'ワープゲート', desc: '2点間を瞬間移動するゲートを解放', apply: () => { this.unlocks.warp = true; } });
+    const sc = pick(this.crops);
+    const slot = Math.random() < 0.5
+      ? { type: 'growth', crop: sc, mult: 1.5, label: `${CROPS[sc].name}の成長速度 ×1.5` }
+      : { type: 'deliver', crop: sc, mult: 1.5, label: `${CROPS[sc].name}の納品量 ×1.5` };
+    offers.push({ id: 'slot', weight: 2, title: `倍率スロット`, desc: slot.label, apply: () => { this.slots.push(slot); } });
+    offers.push({ id: 'stomach', weight: 1, title: '胃袋拡張', desc: '最大空腹度 +25、全員の空腹度を全回復', apply: () => { for (const p of this.players) { p.maxHunger += 25; p.hunger = p.maxHunger; } } });
+    offers.push({ id: 'bag', weight: 1, title: '大きなカゴ', desc: '手持ちの上限 +6', apply: () => { this.invCap += 6; } });
+    offers.push({ id: 'coins', weight: 1, title: '臨時収入', desc: '+80 コイン', apply: () => { this.coins += 80; } });
+    offers.push({ id: 'combo', weight: 1, title: 'リズムキープ', desc: 'コンボの猶予 +1.5秒', apply: () => { this.comboWindow += 1.5; } });
+
+    // 重み付きで3つ選ぶ。エネルギーが無い序盤は必ず候補に入れる
+    const chosen = [];
+    const energy = offers.find((o) => o.id === 'energy');
+    if (this.tech.energy === 0 && energy) chosen.push(energy);
+    const pool = offers.filter((o) => !chosen.includes(o));
+    while (chosen.length < 3 && pool.length) {
+      const total = pool.reduce((s, o) => s + o.weight, 0);
+      let r = Math.random() * total;
+      const i = pool.findIndex((o) => (r -= o.weight) <= 0);
+      chosen.push(pool.splice(i < 0 ? 0 : i, 1)[0]);
+    }
+    return chosen;
+  }
+
+  chooseUpgrade(i) {
+    if (this.state !== 'upgrade') return;
+    const o = this.upgradeOffers[i];
+    if (!o) return;
+    o.apply();
+    this.say(`アップグレード: ${o.title}`);
+    this.quotaIndex++;
+    this.state = 'playing';
+    this.startQuota();
+    sfx('build');
+  }
+
+  giveUp() {
+    if (this.state !== 'playing') return;
+    this.state = 'over';
+    this.say('ランを放棄しました。');
+  }
+
+  metaReward() {
+    return this.quotasCleared * 2 + Math.floor(this.totalDelivered / 15) + 1;
+  }
+
+  // ---- 描画 ----------------------------------------------------------------
+
+  render(ctx, view) {
+    ctx.imageSmoothingEnabled = false;
+    const fr = this.farmRect();
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const t = this.tiles[y][x];
+        const px = x * TILE, py = y * TILE;
+        if (t.crop && t.crop.ripe && CROPS[t.crop.kind].field) {
+          drawTile(ctx, CROPS[t.crop.kind].field, px, py, TILE);
+        } else if (t.soil) {
+          drawTile(ctx, 'soil', px, py, TILE);
+        } else {
+          drawTile(ctx, t.flower ? 'grassFlower' : 'grass', px, py, TILE);
+        }
+        if (t.crop && !(t.crop.ripe && CROPS[t.crop.kind].field)) {
+          if (t.crop.ripe) {
+            drawSprite(ctx, itemSpriteKey(t.crop.kind), px + 4, py + 2, TILE - 8, TILE - 8);
+          } else {
+            drawSprout(ctx, px, py, TILE, t.crop.t / CROPS[t.crop.kind].grow, t.crop.kind);
+          }
+        }
+        if (t.crop && t.crop.ripe) {
+          const s = Math.sin(this.t * 4 + x + y) * 2;
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(px + TILE - 7, py + 3 + s, 3, 3);
+        }
+      }
+    }
+    // 農地の境界
+    ctx.save();
+    ctx.strokeStyle = '#fff6';
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = 2;
+    ctx.strokeRect(fr.x * TILE + 1, fr.y * TILE + 1, fr.w * TILE - 2, fr.h * TILE - 2);
+    ctx.restore();
+
+    // パイロンの範囲
+    for (const b of this.buildings) {
+      if (b.type !== 'pylon') continue;
+      ctx.fillStyle = this.pylonPowered ? (this.weather.phase === 'active' ? '#7fd4ff33' : '#7fd4ff14') : '#ff505014';
+      ctx.beginPath(); ctx.arc(center(b.x), center(b.y), TILE * 3.08, 0, Math.PI * 2); ctx.fill();
+    }
+
+    for (const b of this.buildings) this.drawBuilding(ctx, b);
+
+    // 天候の予告エリア
+    const w = this.weather;
+    if (w.kind === 'hail' && w.phase !== 'clear') {
+      ctx.save();
+      ctx.fillStyle = w.phase === 'warning' ? `rgba(255,60,60,${0.12 + 0.1 * Math.sin(this.t * 10)})` : 'rgba(200,220,255,0.18)';
+      ctx.beginPath(); ctx.arc(w.cx * TILE, w.cy * TILE, w.r * TILE, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    // アイテム
+    for (const it of this.items) {
+      const bob = it.state === 'ground' && !it.onConveyor ? Math.sin(it.age * 5 + it.id) * 1.5 : 0;
+      const s = it.state === 'orbit' ? 20 : 24;
+      if (it.state === 'ground') { ctx.fillStyle = '#0003'; ctx.fillRect(it.x - 8, it.y + 7, 16, 3); }
+      drawSprite(ctx, itemSpriteKey(it.crop), it.x - s / 2, it.y - s / 2 + bob, s, s);
+      if (it.cut) { ctx.fillStyle = '#9fe870'; ctx.fillRect(it.x + 6, it.y - 10, 3, 3); }
+    }
+
+    // プレイヤー
+    for (const p of this.players) {
+      const ft = this.facingTile(p);
+      if (this.inBounds(ft.x, ft.y)) {
+        ctx.strokeStyle = p.id === 0 ? '#ffe066' : '#ff9ad5';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(ft.x * TILE + 2, ft.y * TILE + 2, TILE - 4, TILE - 4);
+      }
+      ctx.fillStyle = '#0004';
+      ctx.beginPath(); ctx.ellipse(p.x, p.y + 14, 12, 4, 0, 0, Math.PI * 2); ctx.fill();
+      const hop = p.moving ? Math.abs(Math.sin(p.anim)) * 3 : 0;
+      ctx.save();
+      if (p.dir === 2) { ctx.translate(p.x, 0); ctx.scale(-1, 1); ctx.translate(-p.x, 0); }
+      drawSprite(ctx, p.id === 0 ? 'player1' : 'player2', p.x - 18, p.y - 30 - hop, 36, 44);
+      ctx.restore();
+      if (this.players.length > 1) {
+        ctx.fillStyle = p.id === 0 ? '#ffe066' : '#ff9ad5';
+        ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(`P${p.id + 1}`, p.x, p.y - 34 - hop);
+      }
+      if (p.inv.length) {
+        // 背負っている作物
+        for (let i = 0; i < Math.min(4, p.inv.length); i++) drawSprite(ctx, itemSpriteKey(p.inv[p.inv.length - 1 - i]), p.x + 8 + i * 3, p.y - 26 - i * 5, 14, 14);
+      }
+    }
+
+    // ドローン
+    for (const d of this.drones) {
+      const y = d.y - 18 + Math.sin(d.bob) * 3;
+      ctx.fillStyle = '#0003'; ctx.fillRect(d.x - 7, d.y + 4, 14, 3);
+      ctx.fillStyle = '#5d6673'; ctx.fillRect(d.x - 9, y - 4, 18, 8);
+      ctx.fillStyle = '#7fd4ff'; ctx.fillRect(d.x - 3, y - 2, 6, 4);
+      ctx.fillStyle = '#cfd6de';
+      const rp = Math.sin(this.t * 40) > 0 ? 8 : 4;
+      ctx.fillRect(d.x - 12, y - 7, rp, 2); ctx.fillRect(d.x + 12 - rp, y - 7, rp, 2);
+      if (d.carry.length) drawSprite(ctx, itemSpriteKey(d.carry[0]), d.x - 6, y + 3, 12, 12);
+    }
+
+    // 雹と嵐
+    for (const h of this.hail) {
+      ctx.globalAlpha = Math.max(0, h.life);
+      drawSprite(ctx, 'hailstone', h.x - 5, h.y - h.h - 5, 10, 10);
+      ctx.globalAlpha = 1;
+    }
+    if (w.kind === 'storm' && w.phase === 'active') {
+      ctx.fillStyle = 'rgba(20,30,50,0.28)'; ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = 'rgba(180,200,255,0.5)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i < 80; i++) {
+        const x = (i * 97 + this.t * 600 * (1 + w.wind.x * 0.5)) % W;
+        const y = (i * 53 + this.t * 700) % H;
+        ctx.moveTo(x, y); ctx.lineTo(x + w.wind.x * 10 - 3, y + 14);
+      }
+      ctx.stroke();
+      if (w.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${w.flash * 3})`; ctx.fillRect(0, 0, W, H); }
+    } else if (w.kind === 'storm' && w.phase === 'warning') {
+      ctx.fillStyle = `rgba(20,30,50,${0.1 + 0.05 * Math.sin(this.t * 8)})`; ctx.fillRect(0, 0, W, H);
+    }
+
+    for (const p of this.particles) { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); }
+    ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center';
+    for (const f of this.floaters) {
+      ctx.globalAlpha = Math.min(1, f.life * 2);
+      ctx.fillStyle = '#000a'; ctx.fillText(f.text, f.x + 1, f.y + 1);
+      ctx.fillStyle = f.color; ctx.fillText(f.text, f.x, f.y);
+    }
+    ctx.globalAlpha = 1;
+
+    // 建築カーソル
+    if (view && view.cursor) {
+      const { x, y, tool, dir } = view.cursor;
+      if (this.inBounds(x, y) && tool) {
+        let ok = true;
+        if (tool === 'demolish') ok = !!this.bAt[y][x];
+        else if (tool === 'move') ok = view.movingBox ? !this.bAt[y][x] : this.bAt[y][x]?.type === 'box';
+        else ok = this.canPlace(tool, x, y) && this.coins >= BUILDINGS[tool].cost;
+        ctx.fillStyle = ok ? '#7fff7f44' : '#ff505055';
+        ctx.fillRect(x * TILE, y * TILE, TILE, TILE);
+        if (BUILDINGS[tool]) {
+          ctx.globalAlpha = 0.6;
+          this.drawBuilding(ctx, { type: tool, x, y, dir, anim: 0, store: [], fuel: 0, burn: 0 });
+          ctx.globalAlpha = 1;
+          if (tool === 'pylon' || tool === 'collector') {
+            ctx.strokeStyle = '#fff8'; ctx.beginPath(); ctx.arc(center(x), center(y), TILE * 3.08, 0, Math.PI * 2); ctx.stroke();
+          }
+        }
+      }
+    }
+  }
+
+  drawBuilding(ctx, b) {
+    const px = b.x * TILE, py = b.y * TILE, cx = px + TILE / 2, cy = py + TILE / 2;
+    const d = DIRS[b.dir] || DIRS[0];
+    const r = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(px + x, py + y, w, h); };
+    const arrow = (col) => {
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(Math.atan2(d.y, d.x));
+      ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(-4, -7); ctx.lineTo(-4, 7); ctx.closePath(); ctx.fill();
+      ctx.restore();
+    };
+    switch (b.type) {
+      case 'box': {
+        const tier = Math.min(3, this.tech.deliver);
+        drawSprite(ctx, `box${tier}`, px + 2, py + 2, TILE - 4, TILE - 4);
+        break;
+      }
+      case 'terminal':
+        r(6, 4, 28, 22, '#222'); r(9, 7, 22, 16, '#0b2'); r(16, 26, 8, 6, '#444'); r(8, 32, 24, 4, '#333');
+        ctx.fillStyle = '#0f4'; ctx.font = '8px monospace'; ctx.textAlign = 'left';
+        ctx.fillText(Math.sin(this.t * 6) > 0 ? '>_' : '>', px + 11, py + 18);
+        break;
+      case 'wall': drawTile(ctx, 'wall', px, py, TILE); break;
+      case 'fan': {
+        r(4, 4, 32, 32, '#d9dee5'); r(6, 6, 28, 28, '#9aa4b1');
+        ctx.save(); ctx.translate(cx, cy); ctx.rotate(b.anim * 20);
+        ctx.fillStyle = '#eef2f6'; for (let i = 0; i < 3; i++) { ctx.rotate(Math.PI * 2 / 3); ctx.fillRect(-2, -12, 4, 12); }
+        ctx.restore();
+        arrow('#3a6ea5');
+        break;
+      }
+      case 'belt':
+      case 'pipe': {
+        const pipe = b.type === 'pipe';
+        r(0, 0, TILE, TILE, pipe ? '#53606e' : '#3b3b3b');
+        ctx.save(); ctx.translate(cx, cy); ctx.rotate(Math.atan2(d.y, d.x));
+        if (pipe) {
+          ctx.fillStyle = '#8fa3b8'; ctx.fillRect(-20, -12, 40, 24);
+          ctx.fillStyle = '#6c8096'; ctx.fillRect(-20, -12, 40, 4); ctx.fillRect(-20, 8, 40, 4);
+          const o = (b.anim * 40) % 20;
+          ctx.fillStyle = '#b6c6d6'; for (let i = -1; i < 2; i++) ctx.fillRect(-20 + o + i * 20, -8, 3, 16);
+        } else {
+          ctx.fillStyle = '#5a5a5a'; ctx.fillRect(-20, -14, 40, 28);
+          const o = (b.anim * TILE) % 10;
+          ctx.fillStyle = '#7a7a7a'; for (let i = -3; i < 3; i++) ctx.fillRect(-20 + o + i * 10, -14, 3, 28);
+          // 歯車
+          ctx.fillStyle = '#c9a227'; ctx.beginPath(); ctx.arc(-14, -14, 5, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = '#3b3b3b'; ctx.beginPath(); ctx.arc(-14, -14, 2, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+        if (!this.powered) { ctx.fillStyle = '#ff5050'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('⚡', cx, py + 12); }
+        break;
+      }
+      case 'wireless':
+        r(10, 18, 20, 18, '#4a5568'); r(18, 4, 4, 16, '#a0aec0');
+        ctx.strokeStyle = '#7fd4ff'; ctx.lineWidth = 2;
+        for (let i = 1; i <= 2; i++) { ctx.beginPath(); ctx.arc(cx, py + 6, 5 * i + (this.t * 6 % 4), Math.PI * 1.15, Math.PI * 1.85); ctx.stroke(); }
+        break;
+      case 'bike': {
+        ctx.strokeStyle = '#333'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(px + 11, py + 28, 7, 0, Math.PI * 2); ctx.arc(px + 29, py + 28, 7, 0, Math.PI * 2); ctx.stroke();
+        r(11, 18, 18, 3, '#d64545'); r(26, 10, 3, 10, '#d64545'); r(10, 12, 8, 3, '#333');
+        ctx.save(); ctx.translate(px + 20, py + 28); ctx.rotate(b.anim * 1.2); ctx.fillStyle = '#ffe066'; ctx.fillRect(-1, -6, 2, 12); ctx.restore();
+        r(30, 2, 8, 8, '#2d3748'); r(32, 4, 4, 4, this.power > 0 ? '#ffe066' : '#666');
+        break;
+      }
+      case 'biomass':
+        r(6, 8, 28, 28, '#6b4b2a'); r(10, 12, 20, 16, '#2a1a10');
+        if (b.fuel > 0 || b.burn > 0) { r(12, 18 + Math.sin(this.t * 12) * 2, 16, 10, '#ff7a1a'); r(15, 20, 10, 6, '#ffd23f'); }
+        r(26, 0, 6, 10, '#555');
+        break;
+      case 'fusion': {
+        r(2, 2, 36, 36, '#2d3748'); r(4, 4, 32, 32, '#1a202c');
+        ctx.save(); ctx.translate(cx, cy);
+        ctx.strokeStyle = '#7fd4ff'; ctx.lineWidth = 2;
+        ctx.rotate(b.anim * 2); ctx.beginPath(); ctx.ellipse(0, 0, 13, 5, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.rotate(Math.PI / 3); ctx.beginPath(); ctx.ellipse(0, 0, 13, 5, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 0, 3 + Math.sin(this.t * 8), 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        break;
+      }
+      case 'pylon':
+        r(16, 8, 8, 28, '#8a96a3'); r(12, 32, 16, 6, '#5d6673'); r(13, 2, 14, 8, this.pylonPowered ? '#7fd4ff' : '#666');
+        break;
+      case 'collector':
+        r(4, 4, 32, 32, '#2f855a'); r(8, 8, 24, 24, '#276749');
+        ctx.strokeStyle = '#9ae6b4'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(cx, cy, 6 + (this.t * 8 % 6), 0, Math.PI * 2); ctx.stroke();
+        arrow('#f6e05e');
+        if (b.store.length) { ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'right'; ctx.fillText(b.store.length, px + 36, py + 36); }
+        break;
+      case 'drone':
+        r(4, 20, 32, 16, '#4a5568'); r(8, 24, 24, 8, '#2d3748'); r(14, 26, 12, 4, '#7fd4ff');
+        r(18, 6, 4, 14, '#a0aec0');
+        break;
+      case 'board':
+        r(4, 10, 32, 22, '#c8a165'); r(6, 12, 28, 18, '#ddb97c'); r(26, 6, 3, 14, '#bbb'); r(25, 18, 5, 6, '#333');
+        break;
+      case 'warp': {
+        const col = b.pair ? '#b48cff' : '#777';
+        ctx.save(); ctx.translate(cx, cy);
+        ctx.strokeStyle = col; ctx.lineWidth = 4; ctx.beginPath(); ctx.ellipse(0, 0, 15, 17, 0, 0, Math.PI * 2); ctx.stroke();
+        if (b.pair) { ctx.fillStyle = '#b48cff55'; ctx.rotate(this.t * 3); ctx.fillRect(-6, -6, 12, 12); }
+        ctx.restore();
+        break;
+      }
+      default: r(4, 4, 32, 32, '#888');
+    }
+  }
+}
+
+function techDesc(key, tier) {
+  const t = {
+    collect: { 2: '歩くだけで足元の作物を拾う。拾う時の空腹度消費が減る', 3: '周囲の作物が回転しながら集まってくる（空腹度消費なし）', 4: '固定回収装置を建てられる', 5: '自律回収ドローンの基地を建てられる' },
+    transport: { 2: '扇風機と壁で作物を吹き飛ばして運べる', 3: '歯車駆動のベルトコンベアを建てられる（電力を使う）', 4: '高速なパイプを建てられる', 5: '作物を納品ボックスへ直送する無線転送機を建てられる' },
+    deliver: { 2: '納品ボックスを好きな場所へ移動できる', 3: '納品ボックスを最大3つまで置ける' },
+    energy: { 1: '人力発電機を建てられる（空腹度で電力を作る）', 2: '作物を燃やすバイオマス発電機を建てられる', 3: '食料不要の核融合炉を建てられる' },
+  };
+  return (t[key] && t[key][tier]) || '';
+}

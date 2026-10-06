@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ハーベスト・ローグ</title>
+  <meta name="description" content="空腹度を行動力にして畑を育て、納期ノルマに挑む農業ローグライク自動化コロニーシム">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="panel quota">
+        <div class="label">ノルマ <span id="quota-no"></span></div>
+        <div class="quota-main"><span id="quota-icon" class="icon"></span><span id="quota-text"></span></div>
+        <div class="bar"><div id="quota-bar"></div></div>
+      </div>
+      <div class="panel">
+        <div class="label">期限</div>
+        <div id="time-text" class="big"></div>
+        <div class="bar thin"><div id="time-bar"></div></div>
+      </div>
+      <div class="panel">
+        <div class="label">コイン</div>
+        <div id="coin-text" class="big"></div>
+      </div>
+      <div class="panel">
+        <div class="label">電力</div>
+        <div id="power-text" class="big"></div>
+        <div class="bar thin"><div id="power-bar"></div></div>
+      </div>
+      <div class="panel combo">
+        <div class="label">コンボ</div>
+        <div id="combo-text" class="big"></div>
+        <div class="bar thin"><div id="combo-bar"></div></div>
+      </div>
+      <div class="panel weather">
+        <div class="label">天気</div>
+        <canvas id="weather-icon" width="32" height="32"></canvas>
+        <div id="weather-text"></div>
+      </div>
+    </header>
+
+    <main id="stage">
+      <canvas id="game" width="960" height="600"></canvas>
+
+      <section id="title" class="overlay">
+        <div class="card wide">
+          <h1>ハーベスト・ローグ</h1>
+          <p class="sub">空腹度を行動力にして畑を広げ、納期ノルマに挑む農業ローグライク自動化コロニーシム</p>
+          <div class="row">
+            <button id="start-1p" class="primary">1人で始める</button>
+            <button id="start-2p">2人で始める（同じキーボード）</button>
+          </div>
+          <div class="cols">
+            <div>
+              <h2>遊び方</h2>
+              <ul class="howto">
+                <li>耕す・植える・収穫する・納品する。すべての手作業で<b>空腹度</b>が減ります</li>
+                <li>収穫した作物は <b>食べる</b>（空腹度回復）／<b>納品する</b>（ノルマ・コイン）／<b>燃やす</b>（電力）の取り合い</li>
+                <li>期限までにノルマを達成すると、3つの中から1つアップグレードを選べます</li>
+                <li>途切れずに納品し続けるとコンボ倍率が上がり、ビートが重なっていきます</li>
+                <li>雹や嵐は天候防御パイロンで防げます</li>
+              </ul>
+              <h2>操作</h2>
+              <table class="keys">
+                <tr><th></th><th>1P</th><th>2P</th></tr>
+                <tr><td>移動</td><td>WASD</td><td>矢印キー</td></tr>
+                <tr><td>アクション</td><td>Space</td><td>Enter</td></tr>
+                <tr><td>食べる</td><td>Q</td><td>右Shift</td></tr>
+              </table>
+              <p class="small">1〜6: 植える作物 / マウス: 建設（R で回転・右クリックで解除）/ X: 撤去 / T: 端末 / H: ヘルプ / P: 一時停止</p>
+            </div>
+            <div>
+              <h2>メタ進行 <span class="seeds">種籾 <b id="meta-seeds">0</b></span></h2>
+              <p class="small">ラン終了時に持ち帰った種籾で、次のランを楽にする永続強化を買えます。</p>
+              <div id="meta-shop"></div>
+              <p class="small" id="meta-best"></p>
+            </div>
+          </div>
+          <p class="small credit">画像素材: <a href="https://dot-illust.net/" target="_blank" rel="noopener">DOT ILLUST</a>（読み込めない場合は代替のドット絵で表示します）<span id="asset-status"></span></p>
+        </div>
+      </section>
+
+      <section id="upgrade" class="overlay hidden">
+        <div class="card wide">
+          <h1>ノルマ達成！</h1>
+          <p class="sub">アップグレードを1つ選んでください（1〜3キーでも選べます）</p>
+          <div id="upgrade-cards" class="upgrade-cards"></div>
+        </div>
+      </section>
+
+      <section id="over" class="overlay hidden">
+        <div class="card">
+          <h1>ラン終了</h1>
+          <div id="over-stats"></div>
+          <button id="over-back" class="primary">タイトルへ戻る</button>
+        </div>
+      </section>
+
+      <section id="paused" class="overlay hidden">
+        <div class="card"><h1>一時停止</h1><p>P キーで再開</p></div>
+      </section>
+
+      <section id="help" class="overlay hidden">
+        <div class="card wide">
+          <h1>ヘルプ</h1>
+          <div id="help-body"></div>
+          <button id="help-close" class="primary">閉じる（H）</button>
+        </div>
+      </section>
+
+      <section id="console" class="hidden">
+        <div class="console-head">FARM-TERMINAL v0.1 — 'help' でコマンド一覧 / Esc で閉じる</div>
+        <div id="console-out"></div>
+        <div class="console-in"><span>&gt;</span><input id="console-input" autocomplete="off" spellcheck="false"></div>
+      </section>
+    </main>
+
+    <section id="players"></section>
+
+    <footer id="toolbar">
+      <div class="group">
+        <div class="label">植える作物</div>
+        <div id="seed-buttons" class="buttons"></div>
+      </div>
+      <div class="group grow">
+        <div class="label">建設 <span id="build-hint" class="small"></span></div>
+        <div id="build-buttons" class="buttons"></div>
+      </div>
+      <div class="group">
+        <div class="label">ツール</div>
+        <div class="buttons">
+          <button id="tool-move" title="納品ボックスを移動">移動</button>
+          <button id="tool-demolish" title="建物を撤去（半額返金）">撤去 X</button>
+          <button id="btn-console" title="農場管理端末">端末 T</button>
+          <button id="btn-help">ヘルプ H</button>
+          <button id="btn-sound">音 ON</button>
+        </div>
+      </div>
+    </footer>
+  </div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
