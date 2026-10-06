@@ -5,14 +5,15 @@ import {
 } from './data.js';
 import {
   CHARMS, CHARM_KEYS, deliveryHand, BOSSES, BOSS_KEYS, ORACLES, GOOD_ORACLES, BAD_ORACLES, rollSupply,
+  PACTS, ROT_TIME, DEFAULT_GAMBITS,
 } from './extras.js';
 import { drawSprite, drawTile, drawSprout, itemSpriteKey } from './sprites.js';
 import { sfx, setCombo } from './audio.js';
 
 const W = COLS * TILE;
 const H = ROWS * TILE;
-const BLOCKS_PLAYER = new Set(['wall', 'fan', 'bike', 'biomass', 'fusion', 'pylon', 'collector', 'drone', 'board', 'box', 'terminal', 'wireless', 'sprinkler', 'harvester']);
-const BLOCKS_ITEM = new Set(['wall', 'fan', 'bike', 'fusion', 'pylon', 'drone', 'terminal', 'sprinkler', 'harvester']);
+const BLOCKS_PLAYER = new Set(['wall', 'fan', 'bike', 'biomass', 'fusion', 'pylon', 'collector', 'drone', 'board', 'box', 'terminal', 'wireless', 'sprinkler', 'harvester', 'kakashi']);
+const BLOCKS_ITEM = new Set(['wall', 'fan', 'bike', 'fusion', 'pylon', 'drone', 'terminal', 'sprinkler', 'harvester', 'kakashi']);
 const BOARD_CHARGES = 4; // 手でまな板を使える1日の回数
 const CONVEYORS = { belt: 1.6, pipe: 4.5 }; // マス/秒
 const BOX_LIMIT = 3;
@@ -27,9 +28,10 @@ const center = (t) => t * TILE + TILE / 2;
 let nextId = 1;
 
 export class Game {
-  constructor({ playerCount = 1, meta = { perks: {} }, trait = 'none' } = {}) {
+  constructor({ playerCount = 1, meta = { perks: {} }, trait = 'none', pacts = [] } = {}) {
     const perks = meta.perks || {};
     this.trait = trait;
+    this.pacts = pacts.filter((k) => PACTS[k]);
     this.tiles = [];
     for (let y = 0; y < ROWS; y++) {
       const row = [];
@@ -64,6 +66,11 @@ export class Game {
     this.dayIdx = -1;
     this.shopOffers = [];
     this.rerollCost = 5;
+    this.seasonal = null;
+    this.crows = [];
+    this.crowsTomorrow = false;
+    this.calcPop = null;
+    this.gambits = DEFAULT_GAMBITS.map((g) => ({ ...g }));
     this.crops = ['ninjin', 'kabu'];
     this.slots = [];
     this.comboWindow = 5 + (perks.rhythm || 0);
@@ -74,7 +81,7 @@ export class Game {
     this.power = 0;
     this.powered = false;
     this.pylonPowered = false;
-    this.droneMode = 'deliver';
+    this.droneMode = 'gambit';
     this.invCap = 12;
     this.seed = 'ninjin';
     if (perks.charm) this.addCharm(pick(CHARM_KEYS));
@@ -93,11 +100,11 @@ export class Game {
     this.place('terminal', 22, 1, 0, true);
     this.place('box', 21, 4, 0, true);
 
-    const maxHunger = 100 + 20 * (perks.stomach || 0) + (trait === 'glutton' ? 40 : 0) - (trait === 'tinkerer' ? 20 : 0);
+    const maxHunger = 100 + 20 * (perks.stomach || 0) + (trait === 'glutton' ? 40 : 0) - (trait === 'tinkerer' ? 20 : 0) - (this.pactOn('famine') ? 30 : 0);
     for (let i = 0; i < playerCount; i++) {
       this.players.push({
         id: i, x: center(19), y: center(4 + i * 2), dir: 2, hunger: maxHunger, maxHunger,
-        inv: ['ninjin', 'ninjin'], moving: false, anim: 0, warpCd: 0, fullDeliver: false,
+        inv: ['ninjin', 'ninjin'], sick: 0, moving: false, anim: 0, warpCd: 0, fullDeliver: false,
         input: { up: false, down: false, left: false, right: false },
       });
     }
@@ -134,6 +141,10 @@ export class Game {
 
   has(charm) { return this.charms.includes(charm); }
 
+  pactOn(key) { return this.pacts.includes(key); }
+
+  rotTime() { return ROT_TIME * (this.pactOn('rotting') ? 0.5 : 1); }
+
   bossIs(key) { return this.quota?.boss === key; }
 
   coinMult() {
@@ -152,8 +163,8 @@ export class Game {
   workMult() { return this.oracle === 'fatigue' ? 1.3 : 1; }
 
   buildCost(type) {
-    const c = BUILDINGS[type]?.cost || 0;
-    return this.trait === 'tinkerer' ? Math.floor(c * 0.8) : c;
+    const c = (BUILDINGS[type]?.cost || 0) * (this.pactOn('inflation') ? 1.3 : 1);
+    return Math.floor(this.trait === 'tinkerer' ? c * 0.8 : c);
   }
 
   weatherDamageMult() { return (this.has('scarecrow') ? 0.5 : 1) * (this.trait === 'devout' ? 1.25 : 1); }
@@ -208,7 +219,8 @@ export class Game {
     this.upcoming = this.planQuota(q + 1);
     this.dayIdx = -1;
     // 悪天候は3つ目のノルマから
-    this.weather = { ...this.weather, phase: 'clear', timer: q <= 1 ? 9999 : rand(12, 30) };
+    const calm = q <= 1 && !this.pactOn('stormy');
+    this.weather = { ...this.weather, phase: 'clear', timer: calm ? 9999 : rand(12, 30) };
     this.say(`新しいノルマ: ${DAYS_PER_QUOTA}日以内に${CROPS[crop].name}を${need}個納品`);
     if (plan.boss) this.say(`ボスノルマ「${BOSSES[plan.boss].name}」: ${BOSSES[plan.boss].desc}`);
   }
@@ -227,6 +239,12 @@ export class Game {
     this.boardCharges = BOARD_CHARGES;
     if (this.has('rancher')) for (const p of this.players) p.hunger = Math.min(p.maxHunger, p.hunger + 25);
     this.oracle = null;
+    // ペルソナ風: 毎日ひとつ「旬」の作物が決まる。収穫に空腹度を使わず、納品のコインが1.5倍
+    this.seasonal = pick(this.crops);
+    // 前日に予告されたカラスの群れがやってくる。翌日の予告もここで決める
+    if (this.crowsTomorrow) this.spawnCrows();
+    this.crowsTomorrow = this.pactOn('crows') || (this.quotaIndex >= 1 && Math.random() < 0.3);
+    if (this.crowsTomorrow) this.say('明日はカラスの群れが来そうだ。かかしを立てておこう。');
     if (this.quotaIndex === 0 && this.dayIdx === 0) return;
     const goodChance = this.trait === 'devout' ? 0.85 : 0.6;
     const key = Math.random() < goodChance ? pick(GOOD_ORACLES) : pick(BAD_ORACLES);
@@ -254,7 +272,7 @@ export class Game {
     }
     this.banner = { title: `${this.dayIdx + 1}日目の神託「${o.name}」`, desc: o.desc, good: o.good, life: 4 };
     this.say(`神託「${o.name}」: ${o.desc}`);
-    sfx(o.good ? 'quota' : 'warn');
+    sfx(o.good ? 'oracle' : 'warn');
   }
 
   endOfDay() {
@@ -366,6 +384,10 @@ export class Game {
 
   // extra: 納品の役などで上乗せされる倍率
   deliver(crop, x, y, extra = 0) {
+    if (crop === 'rotten') {
+      this.floater(x, y - 10, '腐っている…', '#c9a0dc');
+      return { coins: 0, base: 0 };
+    }
     const investor = this.has('investor') ? Math.min(0.5, Math.floor(this.coins / 25) * 0.05) : 0;
     let mult = (this.comboMult() + extra + investor) * this.slotMult('deliver', crop);
     if (this.has('allin') && crop === this.quota.crop) mult *= 1.25;
@@ -373,13 +395,15 @@ export class Game {
     this.bestCombo = Math.max(this.bestCombo, this.combo);
     this.comboTimer = this.comboWindow;
     setCombo(this.combo);
-    const coins = Math.max(1, Math.round(CROPS[crop].value * mult * this.coinMult()));
+    const base = CROPS[crop].value * (crop === this.seasonal ? 1.5 : 1);
+    const coins = Math.max(1, Math.round(base * mult * this.coinMult()));
     this.coins += coins;
     this.totalCoins += coins;
     this.totalDelivered++;
     if (crop === this.quota.crop) this.quota.have += mult;
     this.floater(x, y - 10, `+${coins}`, crop === this.quota.crop ? '#ffe066' : '#fff');
     sfx('deliver');
+    return { coins, base };
   }
 
   isProtected(x, y) {
@@ -431,7 +455,8 @@ export class Game {
     const tile = this.tiles[y][x];
     if (tile.crop) {
       if (tile.crop.ripe) {
-        if (!this.spend(p, HUNGER_COST.harvest, true)) return;
+        const cost = tile.crop.kind === this.seasonal ? 0 : HUNGER_COST.harvest;
+        if (!this.spend(p, cost, true)) return;
         this.harvestTile(x, y);
       }
       return;
@@ -477,11 +502,19 @@ export class Game {
         // 手持ちを全部納品する（食べる分は先に食べておく）。中身の組み合わせで役が付く
         const full = p.inv.length >= this.invCap;
         const batch = p.inv.splice(0);
-        const hand = this.bossIs('single') ? null : deliveryHand(batch);
+        const fresh = batch.filter((c) => c !== 'rotten');
+        const hand = this.bossIs('single') ? null : deliveryHand(fresh);
         let extra = hand ? hand.mult * (this.has('bulkorder') ? 1.5 : 1) : 0;
         if (full && this.has('crow')) extra += 0.5;
-        if (hand) { this.floater(cx, cy - 40, `${hand.name} +${extra.toFixed(2)}`, '#ffd23f'); this.say(`納品の役「${hand.name}」 倍率 +${extra.toFixed(2)}`); }
-        batch.forEach((c, i) => this.deliver(c, cx + rand(-8, 8), cy - i * 6, extra));
+        if (hand) { this.say(`納品の役「${hand.name}」 倍率 +${extra.toFixed(2)}`); sfx('hand'); }
+        const combo0 = this.comboMult();
+        let base = 0, total = 0;
+        batch.forEach((c, i) => {
+          const r = this.deliver(c, cx + rand(-8, 8), cy - i * 6, extra);
+          base += r.base; total += r.coins;
+        });
+        // Balatro 風: 「基本 × 倍率 = 獲得」の内訳を表示する
+        if (fresh.length) this.calcPop = { x: cx, y: cy - 30, n: fresh.length, rotten: batch.length - fresh.length, base: Math.round(base), combo: combo0, hand, extra, total, life: 2.6 };
         return;
       }
       case 'bike': {
@@ -534,7 +567,7 @@ export class Game {
   pickFuel(inv) {
     let best = -1, score = -Infinity;
     inv.forEach((c, i) => {
-      const s = CROPS[c].fuel - (c === this.quota.crop ? 100 : 0);
+      const s = CROPS[c].fuel - (c === this.quota.crop ? 100 : 0) + (c === 'rotten' ? 50 : 0);
       if (s > score) { score = s; best = i; }
     });
     return best;
@@ -545,11 +578,21 @@ export class Game {
     if (!p || this.state !== 'playing' || !p.inv.length) return;
     if (p.hunger >= p.maxHunger - 1) { this.floater(p.x, p.y - 30, 'お腹いっぱい', '#ccc'); return; }
     // ノルマ対象以外を優先して食べる
-    let idx = p.inv.findIndex((c) => c !== this.quota.crop);
+    // ノルマ対象以外を優先して食べる。腐った作物は最後の手段
+    let idx = p.inv.findIndex((c) => c !== this.quota.crop && c !== 'rotten');
+    if (idx < 0) idx = p.inv.findIndex((c) => c !== 'rotten');
     if (idx < 0) idx = 0;
     const c = p.inv.splice(idx, 1)[0];
     const food = Math.round(CROPS[c].food * this.foodMult());
     p.hunger = Math.min(p.maxHunger, p.hunger + food);
+    if (c === 'rotten') {
+      // Fallout の放射能のように、腐った作物を食べると最大空腹度が減る（ノルマを達成すると治る）
+      const loss = Math.min(5, p.maxHunger - 40);
+      if (loss > 0) { p.maxHunger -= loss; p.sick += loss; p.hunger = Math.min(p.hunger, p.maxHunger); }
+      this.floater(p.x, p.y - 30, `胃病み 最大空腹度 -${loss}`, '#c9a0dc');
+      sfx('rot');
+      return;
+    }
     this.floater(p.x, p.y - 30, `+${food} 空腹度`, '#9fe870');
     sfx('eat');
   }
@@ -569,6 +612,7 @@ export class Game {
     this.updateWeather(dt);
     this.updateCombo(dt);
     this.updateCrates(dt);
+    this.updateCrows(dt);
     this.updateEffects(dt);
     this.checkQuota();
   }
@@ -720,7 +764,7 @@ export class Game {
         if (this.inFarm(x, y) || this.bAt[y][x] || this.crates.some((c) => c.x === x && c.y === y)) continue;
         this.crates.push({ x, y, life: 40 });
         this.say('補給物資が落ちてきた！');
-        sfx('warn');
+        sfx('crate');
         break;
       }
     }
@@ -754,7 +798,74 @@ export class Game {
     this.floater(cx, cy - 10, text, '#ffe066');
     this.say(`補給物資: ${text}`);
     this.burst(cx, cy, '#c9a227', 10);
-    sfx('quota');
+    sfx('select');
+  }
+
+  // ---- カラスの襲来（前日に予告される） ------------------------------------
+
+  scaredAt(x, y) {
+    return this.buildings.some((b) => b.type === 'kakashi' && Math.abs(b.x - x) <= 2 && Math.abs(b.y - y) <= 2);
+  }
+
+  crowTarget() {
+    const spots = [];
+    this.tiles.forEach((row, y) => row.forEach((t, x) => {
+      if (t.crop && !this.scaredAt(x, y) && !this.crows.some((c) => c.tx === x && c.ty === y)) spots.push({ x, y });
+    }));
+    return spots.length ? pick(spots) : null;
+  }
+
+  spawnCrows() {
+    const n = Math.min(10, 3 + this.quotaIndex);
+    for (let i = 0; i < n; i++) {
+      const side = Math.random() < 0.5;
+      this.crows.push({
+        x: side ? (Math.random() < 0.5 ? -20 : W + 20) : rand(0, W), y: side ? rand(0, H) : -20,
+        tx: null, ty: null, state: 'seek', t: 0, eaten: 0, flap: Math.random() * 6,
+      });
+    }
+    this.say(`カラスの群れ（${n}羽）が来た！ 近づくと追い払える。`);
+    sfx('crow');
+  }
+
+  updateCrows(dt) {
+    for (const c of this.crows) {
+      c.flap += dt * 14;
+      if (c.state === 'seek') {
+        const t = this.crowTarget();
+        if (!t) { c.state = 'leave'; continue; }
+        c.tx = t.x; c.ty = t.y; c.state = 'fly';
+      }
+      if (c.state === 'leave') {
+        const ex = c.x < W / 2 ? -40 : W + 40;
+        c.x += Math.sign(ex - c.x) * 220 * dt; c.y -= 120 * dt;
+        if (c.x < -30 || c.x > W + 30 || c.y < -30) c.gone = true;
+        continue;
+      }
+      // 人が近づくと逃げる。かかしの範囲に入った作物はあきらめる
+      if (this.players.some((p) => Math.hypot(p.x - c.x, p.y - c.y) < TILE * 1.4)) {
+        c.state = 'leave'; this.floater(c.x, c.y - 16, 'カァ！', '#ddd'); sfx('crow'); continue;
+      }
+      const crop = this.tiles[c.ty]?.[c.tx]?.crop;
+      if (!crop || this.scaredAt(c.tx, c.ty)) { c.state = 'seek'; continue; }
+      const gx = center(c.tx), gy = center(c.ty);
+      if (c.state === 'fly') {
+        const d = Math.hypot(gx - c.x, gy - c.y);
+        if (d < 4) { c.state = 'peck'; c.t = (this.has('scarecrow') ? 2 : 1) * 3; }
+        else { const s = Math.min(d, 140 * dt); c.x += (gx - c.x) / d * s; c.y += (gy - c.y) / d * s; }
+      } else if (c.state === 'peck') {
+        c.t -= dt;
+        if (c.t <= 0) {
+          this.tiles[c.ty][c.tx].crop = null;
+          this.burst(gx, gy, CROPS[crop.kind].color, 6);
+          this.floater(gx, gy - 10, '食べられた', '#ff8080');
+          sfx('hit');
+          c.eaten++;
+          c.state = c.eaten >= 2 ? 'leave' : 'seek';
+        }
+      }
+    }
+    this.crows = this.crows.filter((c) => !c.gone);
   }
 
   updateBuildings(dt) {
@@ -820,9 +931,14 @@ export class Game {
 
   updateItems(dt) {
     const storm = this.weather.phase === 'active' && this.weather.kind === 'storm';
+    const rotAt = this.rotTime();
     for (const it of this.items) {
       if (it.dead) continue;
       it.age += dt;
+      if (it.age >= rotAt && it.crop !== 'rotten' && it.state !== 'carried') {
+        it.crop = 'rotten';
+        this.burst(it.x, it.y, '#9b7bb5', 4);
+      }
       it.cd = Math.max(0, it.cd - dt);
       if (it.noSuck) it.noSuck = Math.max(0, it.noSuck - dt);
       if (it.state === 'orbit' || it.state === 'carried') continue;
@@ -934,13 +1050,16 @@ export class Game {
         if (!this.buildings.includes(d.dest)) { d.dest = null; continue; }
         if (this.flyTo(d, center(d.dest.x), center(d.dest.y), speed, dt)) {
           const dest = d.dest;
+          // ガンビットでは行き先に合う作物だけ降ろし、残りは次の行き先へ運ぶ
+          const keep = [];
           for (const c of d.carry) {
+            if (this.droneMode === 'gambit' && d.carry.length && this.droneDestFor(c, d) !== dest) { keep.push(c); continue; }
             if (dest.type === 'box') this.deliver(c, center(dest.x), center(dest.y));
             else if (dest.type === 'biomass') dest.fuel += this.fuelOf(c);
             else if (dest.type === 'collector') dest.store.push(c);
           }
-          d.carry = [];
-          d.dest = null;
+          d.carry = keep;
+          d.dest = keep.length ? this.droneDest(d) : null;
         }
       }
     }
@@ -958,7 +1077,27 @@ export class Game {
   }
 
   droneDest(d) {
+    if (this.droneMode === 'gambit') return this.droneDestFor(d.carry[0], d);
     const type = this.droneMode === 'burn' ? 'biomass' : this.droneMode === 'store' ? 'collector' : 'box';
+    return this.nearest(type, d.x, d.y) || this.nearest('box', d.x, d.y);
+  }
+
+  // ガンビット: 上から順に条件を調べて、最初に当てはまった行動の行き先を返す
+  gambitAction(crop) {
+    for (const g of this.gambits) {
+      const ok = g.if === 'any'
+        || (g.if === 'rotten' && crop === 'rotten')
+        || (g.if === 'quota' && crop === this.quota.crop)
+        || (g.if === 'seasonal' && crop === this.seasonal)
+        || (g.if === 'lowpower' && this.tech.energy > 0 && this.power < this.powerCap() * 0.3);
+      if (ok) return g.then;
+    }
+    return 'deliver';
+  }
+
+  droneDestFor(crop, d) {
+    const act = this.gambitAction(crop);
+    const type = act === 'burn' ? 'biomass' : act === 'store' ? 'collector' : 'box';
     return this.nearest(type, d.x, d.y) || this.nearest('box', d.x, d.y);
   }
 
@@ -1041,6 +1180,7 @@ export class Game {
     this.particles = this.particles.filter((p) => p.life > 0);
     for (const f of this.floaters) { f.y -= 30 * dt; f.life -= dt; }
     if (this.banner) this.banner.life -= dt;
+    if (this.calcPop) this.calcPop.life -= dt;
     this.floaters = this.floaters.filter((f) => f.life > 0);
   }
 
@@ -1051,6 +1191,7 @@ export class Game {
       const bonus = Math.round(this.quotaRemaining() * 0.5);
       this.coins += bonus;
       this.quotasCleared++;
+      for (const p of this.players) { p.maxHunger += p.sick; p.sick = 0; }
       this.say(`ノルマ達成！ 残り時間ボーナス +${bonus} コイン`);
       if (q.boss) {
         this.coins += 40;
@@ -1138,7 +1279,10 @@ export class Game {
 
   // ---- 市場とお守り（Balatro） ----------------------------------------------
 
-  charmPrice(k) { return this.discount ? Math.ceil(CHARMS[k].cost / 2) : CHARMS[k].cost; }
+  charmPrice(k) {
+    const c = CHARMS[k].cost * (this.pactOn('inflation') ? 1.3 : 1);
+    return Math.ceil(this.discount ? c / 2 : c);
+  }
 
   rollShop() {
     const pool = CHARM_KEYS.filter((k) => !this.has(k));
@@ -1151,7 +1295,7 @@ export class Game {
     this.coins -= this.rerollCost;
     this.rerollCost = Math.max(5, this.rerollCost + 2);
     this.rollShop();
-    sfx('pickup');
+    sfx('select');
     return true;
   }
 
@@ -1169,7 +1313,7 @@ export class Game {
     this.addCharm(k);
     this.shopOffers.splice(i, 1);
     this.say(`お守り「${CHARMS[k].name}」を買った`);
-    sfx('build');
+    sfx('deliver');
     return true;
   }
 
@@ -1198,8 +1342,12 @@ export class Game {
     this.say('ランを放棄しました。');
   }
 
+  pactBonus() { return this.pacts.reduce((s, k) => s + PACTS[k].bonus, 0); }
+
+  // 縛りを付けた分だけ持ち帰る種籾が増える
   metaReward() {
-    return this.quotasCleared * 2 + Math.floor(this.totalDelivered / 15) + 1;
+    const base = this.quotasCleared * 2 + Math.floor(this.totalDelivered / 15) + 1;
+    return Math.round(base * (1 + this.pactBonus()));
   }
 
   // ---- 描画 ----------------------------------------------------------------
@@ -1233,6 +1381,11 @@ export class Game {
           const s = Math.sin(this.t * 4 + x + y) * 2;
           ctx.fillStyle = '#fff';
           ctx.fillRect(px + TILE - 7, py + 3 + s, 3, 3);
+          if (t.crop.kind === this.seasonal) {
+            ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'left';
+            ctx.fillStyle = '#000a'; ctx.fillText('旬', px + 3, py + 12);
+            ctx.fillStyle = '#ffe066'; ctx.fillText('旬', px + 2, py + 11);
+          }
         }
       }
     }
@@ -1265,10 +1418,8 @@ export class Game {
       const px = c.x * TILE, py = c.y * TILE;
       const blink = c.life < 8 && Math.sin(this.t * 12) > 0;
       if (blink) continue;
-      ctx.fillStyle = '#0004'; ctx.fillRect(px + 6, py + 32, 28, 4);
-      ctx.fillStyle = '#6b8e23'; ctx.fillRect(px + 6, py + 12, 28, 22);
-      ctx.fillStyle = '#556b2f'; ctx.fillRect(px + 6, py + 12, 28, 5);
-      ctx.fillStyle = '#ffd23f'; ctx.fillRect(px + 17, py + 12, 6, 22);
+      ctx.fillStyle = '#0004'; ctx.fillRect(px + 6, py + 34, 28, 4);
+      drawSprite(ctx, 'crate', px + 5, py + 10, 30, 26);
       // パラシュート
       const sway = Math.sin(this.t * 2 + c.x) * 2;
       ctx.fillStyle = '#e8e8e8';
@@ -1292,6 +1443,10 @@ export class Game {
       const s = it.state === 'orbit' ? 20 : 24;
       if (it.state === 'ground') { ctx.fillStyle = '#0003'; ctx.fillRect(it.x - 8, it.y + 7, 16, 3); }
       drawSprite(ctx, itemSpriteKey(it.crop), it.x - s / 2, it.y - s / 2 + bob, s, s);
+      // もうすぐ腐る作物は紫に点滅する
+      if (it.crop !== 'rotten' && it.age > this.rotTime() - 10 && Math.sin(this.t * 10) > 0) {
+        ctx.fillStyle = '#9b7bb588'; ctx.fillRect(it.x - 7, it.y - 7, 14, 14);
+      }
       if (it.cut) { ctx.fillStyle = '#9fe870'; ctx.fillRect(it.x + 6, it.y - 10, 3, 3); }
     }
 
@@ -1333,6 +1488,18 @@ export class Game {
       if (d.carry.length) drawSprite(ctx, itemSpriteKey(d.carry[0]), d.x - 6, y + 3, 12, 12);
     }
 
+    // カラス
+    for (const c of this.crows) {
+      const hop = c.state === 'peck' ? Math.abs(Math.sin(c.flap)) * 3 : Math.sin(c.flap) * 4;
+      const fly = c.state !== 'peck';
+      if (fly) { ctx.fillStyle = '#0003'; ctx.fillRect(c.x - 8, c.y + 14, 16, 3); }
+      ctx.save();
+      const left = c.state === 'leave' ? c.x < W / 2 : c.tx != null && center(c.tx) < c.x;
+      if (!left) { ctx.translate(c.x, 0); ctx.scale(-1, 1); ctx.translate(-c.x, 0); }
+      drawSprite(ctx, 'crow', c.x - 14, c.y - 18 - (fly ? 10 : 0) - hop, 28, 28);
+      ctx.restore();
+    }
+
     // 雹と嵐
     for (const h of this.hail) {
       ctx.globalAlpha = Math.max(0, h.life);
@@ -1368,14 +1535,40 @@ export class Game {
       const a = Math.min(1, this.banner.life);
       ctx.globalAlpha = a;
       ctx.fillStyle = this.banner.good ? 'rgba(40,36,10,0.85)' : 'rgba(40,10,10,0.85)';
-      ctx.fillRect(W / 2 - 260, 70, 520, 60);
+      ctx.fillRect(W / 2 - 280, 64, 560, 72);
       ctx.strokeStyle = this.banner.good ? '#ffe066' : '#ff7b7b'; ctx.lineWidth = 2;
-      ctx.strokeRect(W / 2 - 260, 70, 520, 60);
+      ctx.strokeRect(W / 2 - 280, 64, 560, 72);
+      // 神託を告げる神さま（祝福）と死神（呪い）
+      drawSprite(ctx, this.banner.good ? 'oracle_good' : 'oracle_bad', W / 2 - 274, 68, 64, 64);
       ctx.textAlign = 'center';
       ctx.fillStyle = this.banner.good ? '#ffe066' : '#ff9a9a'; ctx.font = 'bold 20px sans-serif';
-      ctx.fillText(this.banner.title, W / 2, 96);
+      ctx.fillText(this.banner.title, W / 2 + 30, 94);
       ctx.fillStyle = '#fff'; ctx.font = '14px sans-serif';
-      ctx.fillText(this.banner.desc, W / 2, 118);
+      ctx.fillText(this.banner.desc, W / 2 + 30, 118);
+      ctx.globalAlpha = 1;
+    }
+
+    // 納品の計算（Balatro 風の「基本 × 倍率」）
+    if (this.calcPop && this.calcPop.life > 0) {
+      const c = this.calcPop;
+      const a = Math.min(1, c.life * 2);
+      const mult = c.base ? c.total / c.base : 0;
+      const bw = 250, bh = c.hand ? 70 : 50;
+      const bx = clamp(c.x - bw / 2, 4, W - bw - 4), by = clamp(c.y - bh - 20 + (1 - a) * 10, 4, H - bh - 4);
+      ctx.globalAlpha = a;
+      ctx.fillStyle = 'rgba(20,20,30,0.92)'; ctx.fillRect(bx, by, bw, bh);
+      ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = 2; ctx.strokeRect(bx, by, bw, bh);
+      ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = '#3aa0ff'; ctx.fillRect(bx + 8, by + 8, 70, 26);
+      ctx.fillStyle = '#ff4d4d'; ctx.fillRect(bx + 98, by + 8, 70, 26);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(`${c.base}`, bx + 43, by + 27);
+      ctx.fillText('×', bx + 88, by + 27);
+      ctx.fillText(`${mult.toFixed(2)}`, bx + 133, by + 27);
+      ctx.fillStyle = '#ffe066'; ctx.fillText(`= +${c.total}`, bx + 208, by + 27);
+      ctx.font = '11px sans-serif'; ctx.fillStyle = '#ccc';
+      ctx.fillText(`${c.n}個  コンボ ×${c.combo.toFixed(2)}${c.rotten ? `  腐り ${c.rotten}個は0` : ''}`, bx + bw / 2, by + 46);
+      if (c.hand) { ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 12px sans-serif'; ctx.fillText(`役「${c.hand.name}」 +${c.extra.toFixed(2)}`, bx + bw / 2, by + 62); }
       ctx.globalAlpha = 1;
     }
 
@@ -1396,7 +1589,7 @@ export class Game {
           if (tool === 'pylon' || tool === 'collector') {
             ctx.strokeStyle = '#fff8'; ctx.beginPath(); ctx.arc(center(x), center(y), TILE * 3.08, 0, Math.PI * 2); ctx.stroke();
           }
-          if (tool === 'sprinkler' || tool === 'harvester') {
+          if (tool === 'sprinkler' || tool === 'harvester' || tool === 'kakashi') {
             ctx.strokeStyle = '#fff8'; ctx.strokeRect((x - 2) * TILE, (y - 2) * TILE, TILE * 5, TILE * 5);
           }
         }
@@ -1512,11 +1705,16 @@ export class Game {
         break;
       }
       case 'harvester':
-        r(4, 10, 32, 24, '#c0392b'); r(8, 14, 24, 10, '#e74c3c'); r(6, 32, 8, 6, '#222'); r(26, 32, 8, 6, '#222');
-        ctx.save(); ctx.translate(cx, py + 8); ctx.rotate((b.anim || 0) * 0.8 + (this.powered ? this.t * 3 : 0));
+        drawSprite(ctx, 'harvester_bot', px + 2, py + 6, TILE - 4, TILE - 8);
+        ctx.save(); ctx.translate(cx, py + 6); ctx.rotate((b.anim || 0) * 0.8 + (this.powered ? this.t * 3 : 0));
         ctx.fillStyle = '#ffd23f'; for (let i = 0; i < 4; i++) { ctx.rotate(Math.PI / 2); ctx.fillRect(-1, -8, 2, 8); }
         ctx.restore();
         if (!this.powered) { ctx.fillStyle = '#ff5050'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('⚡', cx, py + 12); }
+        break;
+      case 'kakashi':
+        r(18, 10, 4, 28, '#7a5230'); r(6, 16, 28, 4, '#7a5230');
+        r(10, 18, 20, 12, '#c94f3d'); r(14, 20, 12, 8, '#e0c060');
+        r(13, 2, 14, 11, '#f2d9a0'); r(10, 2, 20, 4, '#b8862b'); r(15, 7, 2, 2, '#333'); r(23, 7, 2, 2, '#333');
         break;
       case 'warp': {
         const col = b.pair ? '#b48cff' : '#777';

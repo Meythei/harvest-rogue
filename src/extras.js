@@ -3,6 +3,11 @@
 // - 神託（毎朝のランダムな祝福と呪い）: ゴッドフィールド
 // - 特性・放射能で巨大化する作物・補給物資: Fallout
 // - スプリンクラー・自動収穫機・混植ボーナス（施設の効果範囲と隣接効果）: シムシティ
+// - 縛り（難しくするほど持ち帰る種籾が増える）: Hades の Heat / Forza の難易度ボーナス
+// - 腐った作物と胃病み（食べると最大空腹度が減る）: Fallout の放射能
+// - 毎日の旬の作物: ペルソナの曜日ごとのイベント
+// - 前日に予告されるカラスの襲来とかかし: ペルソナの天気予報 + タワーディフェンス
+// - ドローンの行動ルール（条件 → 行動の優先リスト）: FF12 のガンビット
 import { CROPS } from './data.js';
 
 // お守り（Balatro のジョーカー）。市場でコインで買い、最大 charmSlots 個まで持てる
@@ -11,7 +16,7 @@ export const CHARMS = {
   crow:      { name: '欲張りなカラス', cost: 35, desc: '手持ちが満杯のまま納品すると、その納品の倍率 +0.5' },
   allin:     { name: '一点張り',       cost: 40, desc: 'ノルマ対象の作物の納品倍率 ×1.25' },
   omnivore:  { name: '雑食家',         cost: 25, desc: '食べたときの空腹度回復が1.5倍' },
-  scarecrow: { name: '守り神のかかし', cost: 30, desc: '雹・嵐・イナゴの被害が半分' },
+  scarecrow: { name: '守り神のかかし', cost: 30, desc: '雹・嵐・イナゴの被害が半分、カラスがついばむのに2倍かかる' },
   hoe:       { name: '黄金のクワ',     cost: 35, desc: '耕す・植えるで空腹度を使わない' },
   piggy:     { name: '貯金箱',         cost: 25, desc: '毎日の終わりに所持コイン10枚ごとに1枚の利息（最大10）' },
   alchemist: { name: '錬金術師',       cost: 30, desc: '燃やした作物の燃料が2倍' },
@@ -94,5 +99,32 @@ export function rollSupply(rand, crops) {
   if (r < 0.9) return { kind: 'power', amount: 40 };
   return { kind: 'charm' };
 }
+
+// 縛り（Hades の Heat）。タイトルで選ぶ。付けた分だけラン終了時の種籾が増える
+export const PACTS = {
+  famine:    { name: '飢饉',           bonus: 0.3,  desc: '最大空腹度 -30' },
+  stormy:    { name: '荒天',           bonus: 0.25, desc: '悪天候が1つ目のノルマから来る' },
+  rotting:   { name: '早腐れ',         bonus: 0.2,  desc: '地面の作物が2倍の速さで腐る' },
+  crows:     { name: 'カラスの縄張り', bonus: 0.3,  desc: 'カラスの群れが毎日来る' },
+  inflation: { name: '物価高',         bonus: 0.2,  desc: 'お守りと建物の値段が1.3倍' },
+};
+export const PACT_KEYS = Object.keys(PACTS);
+
+export const ROT_TIME = 45; // 地面に落ちた作物が腐るまでの秒数
+
+// ドローンのガンビット（FF12）。上から順に条件を調べ、最初に当てはまった行動をとる
+export const GAMBIT_CONDS = {
+  rotten:   '腐った作物',
+  quota:    'ノルマ対象の作物',
+  seasonal: '旬の作物',
+  lowpower: '電力が3割未満',
+  any:      'どの作物でも',
+};
+export const GAMBIT_ACTIONS = { deliver: '納品', burn: '燃やす', store: '保管' };
+export const DEFAULT_GAMBITS = [
+  { if: 'rotten', then: 'burn' },
+  { if: 'lowpower', then: 'burn' },
+  { if: 'any', then: 'deliver' },
+];
 
 export const cropName = (c) => CROPS[c]?.name || c;

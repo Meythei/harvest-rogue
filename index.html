@@ -45,8 +45,9 @@
 
     <div id="infobar">
       <div class="info"><span class="label">神託</span> <span id="oracle-text">—</span></div>
+      <div class="info"><span class="label">旬</span> <span id="season-text">—</span></div>
       <div class="info"><span class="label">次のノルマ</span> <span id="next-text">—</span></div>
-      <div class="info grow"><span class="label">お守り</span> <span id="charm-list"></span></div>
+      <div class="info grow"><span class="label"><canvas id="charm-icon" width="16" height="16"></canvas>お守り</span> <span id="charm-list"></span></div>
     </div>
 
     <main id="stage">
@@ -59,6 +60,10 @@
           <div class="traits">
             <div class="label">特性を1つ選ぶ（長所と短所がセット）</div>
             <div id="trait-buttons" class="buttons"></div>
+          </div>
+          <div class="traits">
+            <div class="label">縛りを付ける（いくつでも。付けた分だけ持ち帰る種籾が増える）</div>
+            <div id="pact-buttons" class="buttons"></div>
           </div>
           <div class="row">
             <button id="start-1p" class="primary">1人で始める</button>
@@ -76,6 +81,9 @@
                 <li>手持ちをまとめて納品すると中身の組み合わせで<b>役</b>が付き、倍率が上がります</li>
                 <li>ノルマのあとは<b>市場</b>でお守りを買えます。3つ目ごとのノルマには縛りの付いた<b>ボス</b>が出ます</li>
                 <li>毎朝<b>神託</b>が下り、その日だけの祝福か呪いが起きます。<b>補給物資</b>が落ちてきたら拾いに行きましょう</li>
+                <li>毎日ひとつ<b>旬</b>の作物が決まります。収穫に空腹度を使わず、納品のコインが1.5倍です</li>
+                <li>地面に放っておいた作物は<b>腐ります</b>。腐った作物は売れず、食べると最大空腹度が減ります</li>
+                <li>前日に予告される<b>カラスの群れ</b>は、近づくか<b>かかし</b>で追い払えます</li>
               </ul>
               <h2>操作</h2>
               <table class="keys">

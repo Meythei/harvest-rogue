@@ -34,6 +34,14 @@ export const DOT_ILLUST = {
   weather_storm: 'weather_thunderstorm',
   hailstone: 'ishi_kori',
   battery: 'kandenchi_01_yellow',
+  // ここから下は追加要素の絵（商用利用は1作品30点までなので、合計30点に収めている）
+  crow: 'karasu',
+  oracle_good: 'character_kamisama_gold',
+  oracle_bad: 'character_monster_shinigami_02',
+  crate: 'kibako_01_brown',
+  charm: 'magatama_sanshunojingi',
+  item_rotten: 'doku_purple',
+  harvester_bot: 'robotsojiki_black',
 };
 
 // 作物。grow=成熟までの秒数, food=食べた時の空腹回復, fuel=燃やした時の燃料, value=納品時のコイン
@@ -44,6 +52,8 @@ export const CROPS = {
   daikon:  { name: 'ダイコン',     grow: 30, food: 18, fuel: 2, value: 6,  yield: 1, field: 'field_daikon', color: '#eeeeee' },
   corn:    { name: 'トウモロコシ', grow: 34, food: 12, fuel: 4, value: 5,  yield: 2, color: '#f6c945' },
   kabocha: { name: 'カボチャ',     grow: 50, food: 30, fuel: 3, value: 14, yield: 1, color: '#2f7d3a' },
+  // 地面に放置した作物は腐る。納品しても価値がなく、食べると胃病みになる。燃やすことはできる
+  rotten:  { name: '腐った作物',   grow: 999, food: 4, fuel: 1, value: 0, yield: 1, color: '#7a5b8f' },
 };
 export const CROP_ORDER = ['ninjin', 'kabu', 'tomato', 'daikon', 'corn', 'kabocha'];
 
@@ -89,8 +99,9 @@ export const BUILDINGS = {
   box:       { name: '納品ボックス',     cost: 50,  req: { deliver: 3 }, desc: '追加の納品ボックス（最大3つ）' },
   sprinkler: { name: 'スプリンクラー',   cost: 30,  req: { unlock: 'sprinkler' }, power: 0.05, desc: '半径2マスの作物の成長が1.4倍（電力を使う）' },
   harvester: { name: '自動収穫機',       cost: 70,  req: { unlock: 'harvester' }, power: 0.15, desc: '半径2マスの熟した作物を収穫して同じ作物を植え直す（電力を使う）' },
+  kakashi:   { name: 'かかし',           cost: 15,  req: {}, desc: '半径2マスの作物にカラスが寄りつかない' },
 };
-export const BUILD_ORDER = ['wall', 'fan', 'belt', 'pipe', 'wireless', 'bike', 'biomass', 'fusion', 'pylon', 'collector', 'drone', 'board', 'warp', 'box', 'sprinkler', 'harvester'];
+export const BUILD_ORDER = ['kakashi', 'wall', 'fan', 'belt', 'pipe', 'wireless', 'bike', 'biomass', 'fusion', 'pylon', 'collector', 'drone', 'board', 'warp', 'box', 'sprinkler', 'harvester'];
 
 export const DIRS = [
   { x: 1, y: 0, name: '→' },

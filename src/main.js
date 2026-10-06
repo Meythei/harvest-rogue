@@ -4,7 +4,7 @@ import { loadSprites, drawSprite, itemSpriteKey, assetStatus } from './sprites.j
 import { initAudio, tickAudio, sfx, setAudioEnabled, isAudioEnabled, setCombo } from './audio.js';
 import { Game } from './game.js';
 import { runCommand } from './console.js';
-import { CHARMS, BOSSES, ORACLES, TRAITS, TRAIT_KEYS } from './extras.js';
+import { CHARMS, BOSSES, ORACLES, TRAITS, TRAIT_KEYS, PACTS, PACT_KEYS, GAMBIT_CONDS, GAMBIT_ACTIONS } from './extras.js';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('game');
@@ -24,6 +24,7 @@ function saveMeta() {
 }
 let meta = loadMeta();
 let trait = 'none';
+let pacts = [];
 
 // ---- 状態 ------------------------------------------------------------------
 let game = null;
@@ -101,9 +102,30 @@ function renderTraits() {
   wrap.appendChild(d);
 }
 
+function renderPacts() {
+  const wrap = $('pact-buttons');
+  wrap.innerHTML = '';
+  for (const k of PACT_KEYS) {
+    const b = document.createElement('button');
+    b.className = pacts.includes(k) ? 'active' : '';
+    b.textContent = `${PACTS[k].name} +${Math.round(PACTS[k].bonus * 100)}%`;
+    b.title = PACTS[k].desc;
+    b.onclick = () => { pacts = pacts.includes(k) ? pacts.filter((p) => p !== k) : [...pacts, k]; sfx('select'); renderPacts(); };
+    wrap.appendChild(b);
+  }
+  const d = document.createElement('div');
+  d.className = 'small';
+  d.style.width = '100%';
+  const bonus = pacts.reduce((s, k) => s + PACTS[k].bonus, 0);
+  d.textContent = pacts.length
+    ? `${pacts.map((k) => `${PACTS[k].name}: ${PACTS[k].desc}`).join(' / ')}（種籾 ×${(1 + bonus).toFixed(2)}）`
+    : '縛りなし';
+  wrap.appendChild(d);
+}
+
 function startGame(players) {
   initAudio();
-  game = new Game({ playerCount: players, meta, trait });
+  game = new Game({ playerCount: players, meta, trait, pacts });
   game.onTerminal = () => openConsole();
   paused = false;
   tool = null; movingBox = null;
@@ -121,6 +143,7 @@ function toTitle() {
   show('over', false); show('upgrade', false); show('shop', false);
   renderMetaShop();
   renderTraits();
+  renderPacts();
   show('title', true);
   setCombo(0);
 }
@@ -138,6 +161,7 @@ function endRun() {
     お守り: <b>${game.charms.map((k) => CHARMS[k].name).join('、') || 'なし'}</b><br>
     最大コンボ: <b>${game.bestCombo}</b><br>
     農地: <b>${FARM_TIERS[game.tech.farm].name}</b><br>
+    縛り: <b>${game.pacts.map((k) => PACTS[k].name).join('、') || 'なし'}</b>（種籾 ×${(1 + game.pactBonus()).toFixed(2)}）<br>
     持ち帰った種籾: <b>+${reward}</b>（合計 ${meta.seeds}）`;
   show('over', true);
   setCombo(0);
@@ -245,12 +269,14 @@ function updateHud() {
   document.querySelector('.combo').classList.toggle('hot', g.combo >= 6);
 
   // 神託・ボス・次のノルマ・お守り
-  const osig = `${g.oracle}|${q.boss}|${g.quotaIndex}|${g.charms.join()}|${g.boardCharges}`;
+  const osig = `${g.oracle}|${q.boss}|${g.quotaIndex}|${g.charms.join()}|${g.boardCharges}|${g.seasonal}|${g.crowsTomorrow}`;
   if (changed('info', osig)) {
     const ot = $('oracle-text');
     const o = g.oracle && ORACLES[g.oracle];
     ot.textContent = o ? `${o.name}: ${o.desc}` : '—';
     ot.className = o ? (o.good ? 'good' : 'bad') : '';
+    $('season-text').innerHTML = (g.seasonal ? `${CROPS[g.seasonal].name}（収穫に空腹度なし・コイン1.5倍）` : '—')
+      + (g.crowsTomorrow ? ' <span class="boss">明日カラス襲来</span>' : '');
     const boss = q.boss ? `<span class="boss">ボス「${BOSSES[q.boss].name}」${BOSSES[q.boss].desc}</span> / ` : '';
     const u = g.upcoming;
     $('next-text').innerHTML = `${boss}次: ${CROPS[u.crop].name}${u.boss ? `（ボス「${BOSSES[u.boss].name}」）` : ''}`;
@@ -419,6 +445,12 @@ function renderHelp() {
     '夜': '1日の終わりに全員の空腹度が8減る',
     '補給物資': '畑の外にときどき落ちてくる。上を歩くとコイン・作物・電池・お守りのどれかが手に入る',
     '放射能': '核融合炉の近く（2マス）で熟した作物は巨大化し、収穫数 +1',
+    '旬': '毎朝ひとつ選ばれる作物。収穫に空腹度を使わず、納品のコインが1.5倍',
+    '腐敗': `地面に${45}秒放置した作物は腐る（腐る前の10秒は紫に点滅）。腐った作物は売れず、燃やすことはできる`,
+    '胃病み': '腐った作物を食べると最大空腹度が5減る。ノルマを達成すると治る',
+    'カラス': '2つ目のノルマから、前日に予告されて群れで来る。人が近づくと逃げ、かかしの周り2マスには寄りつかない',
+    '縛り': 'タイトルで選ぶ。付けた分だけラン終了時の種籾が増える',
+    'ガンビット': `端末の gambit コマンドでドローンの行動ルールを並べ替える。条件: ${Object.entries(GAMBIT_CONDS).map(([k, v]) => `${k}(${v})`).join(' ')} / 行動: ${Object.entries(GAMBIT_ACTIONS).map(([k, v]) => `${k}(${v})`).join(' ')}`,
     '混植': '隣に違う作物があると成長 +20%',
   })}</table>
   <h2>お守り</h2>
@@ -434,7 +466,7 @@ function renderHelp() {
   <h2>建物</h2>
   <table>${BUILD_ORDER.map((t) => `<tr><td>${BUILDINGS[t].name}</td><td>${BUILDINGS[t].desc}（${BUILDINGS[t].cost}コイン）</td></tr>`).join('')}</table>
   <h2>作物</h2>
-  <table>${Object.values(CROPS).map((c) => `<tr><td>${c.name}</td><td>成長${c.grow}秒 / 空腹回復${c.food} / 燃料${c.fuel} / 価値${c.value} / 収量${c.yield}</td></tr>`).join('')}</table>`;
+  <table>${Object.entries(CROPS).filter(([k]) => k !== 'rotten').map(([, c]) => `<tr><td>${c.name}</td><td>成長${c.grow}秒 / 空腹回復${c.food} / 燃料${c.fuel} / 価値${c.value} / 収量${c.yield}</td></tr>`).join('')}</table>`;
 }
 function toggleHelp(on) {
   const open = on ?? $('help').classList.contains('hidden');
@@ -584,9 +616,13 @@ function drawTitleBackground(t) {
 
 loadSprites(new URLSearchParams(location.search).get('assets') !== 'off').then(() => {
   $('asset-status').textContent = assetStatus.loaded ? `（${assetStatus.loaded}/${assetStatus.total} 点を読み込み済み）` : '（代替のドット絵で表示中）';
+  const ic = $('charm-icon').getContext('2d');
+  ic.imageSmoothingEnabled = false;
+  drawSprite(ic, 'charm', 0, 0, 16, 16);
 });
 renderMetaShop();
 renderTraits();
+renderPacts();
 requestAnimationFrame(frame);
 
 // デバッグ用（ブラウザのコンソールから参照できるように）
