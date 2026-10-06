@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prepare-assets": "rm -rf public && mkdir -p public && cp -r ../index.html ../style.css ../src public/",
+    "prepare-assets": "rm -rf public && mkdir -p public && cp -r ../index.html ../style.css ../src ../assets public/",
     "dev": "npm run prepare-assets && wrangler dev",
     "deploy": "npm run prepare-assets && wrangler deploy"
   },

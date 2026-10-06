@@ -5,6 +5,7 @@ export const COLS = 24;
 export const ROWS = 15;
 export const DAY_LENGTH = 40; // 1日の長さ（秒）
 export const DAYS_PER_QUOTA = 3;
+export const QUOTA_GROWTH = 1.5; // ノルマごとの必要数の伸び
 
 // DOT ILLUST (https://dot-illust.net/) の素材。実行時にブラウザが直接読み込み、
 // 読み込めない場合は sprites.js の代替ドット絵で描画する。
@@ -24,8 +25,6 @@ export const DOT_ILLUST = {
   item_kabocha: 'kabocha',
   player1: 'character_murabito_young_man_green',
   player2: 'character_murabito_young_woman_green',
-  player3: 'character_murabito_young_man_blue',
-  player4: 'character_murabito_young_man_orange',
   box1: 'treasure_bronze',
   box2: 'treasure_silver',
   box3: 'treasure_gold',
@@ -35,6 +34,14 @@ export const DOT_ILLUST = {
   weather_storm: 'weather_thunderstorm',
   hailstone: 'ishi_kori',
   battery: 'kandenchi_01_yellow',
+  // ここから下は追加要素の絵（商用利用は1作品30点までなので、合計30点に収めている）
+  crow: 'karasu',
+  oracle_good: 'character_kamisama_gold',
+  oracle_bad: 'character_monster_shinigami_02',
+  crate: 'kibako_01_brown',
+  charm: 'magatama_sanshunojingi',
+  item_rotten: 'doku_purple',
+  harvester_bot: 'robotsojiki_black',
 };
 
 // 作物。grow=成熟までの秒数, food=食べた時の空腹回復, fuel=燃やした時の燃料, value=納品時のコイン
@@ -45,6 +52,8 @@ export const CROPS = {
   daikon:  { name: 'ダイコン',     grow: 30, food: 18, fuel: 2, value: 6,  yield: 1, field: 'field_daikon', color: '#eeeeee' },
   corn:    { name: 'トウモロコシ', grow: 34, food: 12, fuel: 4, value: 5,  yield: 2, color: '#f6c945' },
   kabocha: { name: 'カボチャ',     grow: 50, food: 30, fuel: 3, value: 14, yield: 1, color: '#2f7d3a' },
+  // 地面に放置した作物は腐る。納品しても価値がなく、食べると胃病みになる。燃やすことはできる
+  rotten:  { name: '腐った作物',   grow: 999, food: 4, fuel: 1, value: 0, yield: 1, color: '#7a5b8f' },
 };
 export const CROP_ORDER = ['ninjin', 'kabu', 'tomato', 'daikon', 'corn', 'kabocha'];
 
@@ -85,11 +94,14 @@ export const BUILDINGS = {
   pylon:     { name: '天候防御パイロン', cost: 30,  req: { unlock: 'pylon' }, desc: '半径3マスの雹・嵐を防ぐ（悪天候中に電力を使う）' },
   collector: { name: '固定回収装置',     cost: 40,  req: { collect: 4 }, rotate: true, power: 0.15, desc: '半径3マスの作物を吸い込み、向いている方向へ出す' },
   drone:     { name: 'ドローン基地',     cost: 80,  req: { collect: 5 }, power: 0.25, desc: '自律回収ドローンが作物を集めて運ぶ（端末で制御）' },
-  board:     { name: 'まな板',           cost: 25,  req: { unlock: 'board' }, desc: '作物を2倍にする加工台（1個につき1回）' },
+  board:     { name: 'まな板',           cost: 25,  req: { unlock: 'board' }, desc: '上を流れる作物を2倍にする加工台（1個につき1回）。手で切るのは1日4回まで' },
   warp:      { name: 'ワープゲート',     cost: 45,  req: { unlock: 'warp' }, desc: '2つ1組。人も作物も瞬間移動' },
   box:       { name: '納品ボックス',     cost: 50,  req: { deliver: 3 }, desc: '追加の納品ボックス（最大3つ）' },
+  sprinkler: { name: 'スプリンクラー',   cost: 30,  req: { unlock: 'sprinkler' }, power: 0.05, desc: '半径2マスの作物の成長が1.4倍（電力を使う）' },
+  harvester: { name: '自動収穫機',       cost: 70,  req: { unlock: 'harvester' }, power: 0.15, desc: '半径2マスの熟した作物を収穫して同じ作物を植え直す（電力を使う）' },
+  kakashi:   { name: 'かかし',           cost: 15,  req: {}, desc: '半径2マスの作物にカラスが寄りつかない' },
 };
-export const BUILD_ORDER = ['wall', 'fan', 'belt', 'pipe', 'wireless', 'bike', 'biomass', 'fusion', 'pylon', 'collector', 'drone', 'board', 'warp', 'box'];
+export const BUILD_ORDER = ['kakashi', 'wall', 'fan', 'belt', 'pipe', 'wireless', 'bike', 'biomass', 'fusion', 'pylon', 'collector', 'drone', 'board', 'warp', 'box', 'sprinkler', 'harvester'];
 
 export const DIRS = [
   { x: 1, y: 0, name: '→' },
@@ -106,4 +118,6 @@ export const META_PERKS = {
   garden:    { name: '広い庭',       desc: '農地「畑」から開始',        max: 1, cost: [12] },
   bike:      { name: '自転車',       desc: '人力発電を解放して開始',    max: 1, cost: [8] },
   rhythm:    { name: 'リズム感',     desc: 'コンボ猶予 +1秒',           max: 2, cost: [6, 12] },
+  charm:     { name: '形見のお守り', desc: 'ランダムなお守りを1つ持って開始', max: 1, cost: [10] },
+  pocket:    { name: '大きな巾着',   desc: 'お守りの枠 +1',             max: 1, cost: [15] },
 };

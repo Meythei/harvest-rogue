@@ -42,6 +42,22 @@ a { color: var(--accent); }
 #weather-text { font-size: 12px; line-height: 1.2; }
 #weather-text.alert { color: var(--bad); font-weight: bold; }
 
+/* 神託・次のノルマ・お守り */
+#infobar { display: flex; gap: 6px; flex-wrap: wrap; font-size: 13px; }
+#infobar .info { background: var(--panel); border: 2px solid var(--line); border-radius: 4px; padding: 3px 8px; }
+#infobar .grow { flex: 1; min-width: 200px; }
+#oracle-text.good { color: var(--accent); }
+#oracle-text.bad { color: var(--bad); }
+.boss { color: var(--bad); font-weight: bold; }
+.charm-chip { display: inline-block; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; margin-right: 3px; font-size: 12px; }
+.traits { margin: 4px 0 12px; }
+.traits button.active { border-color: var(--accent); background: #4a4420; }
+.owned { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px; }
+.owned button { font-size: 12px; text-align: left; }
+.shop-actions { margin-top: 12px; align-items: center; }
+.upgrade-card.cat-charm { border-color: #c39bff; }
+.upgrade-card .price { color: var(--accent); font-size: 13px; }
+
 /* ステージ */
 #stage { position: relative; border: 2px solid var(--line); border-radius: 4px; overflow: hidden; background: #000; }
 #game { display: block; width: 100%; height: auto; image-rendering: pixelated; cursor: crosshair; }
@@ -125,6 +141,7 @@ button.active { border-color: var(--accent); background: #4a4420; }
   .upgrade-cards { grid-template-columns: 1fr; }
   .upgrade-card { min-height: 0; }
 }
+#charm-icon { width: 14px; height: 14px; vertical-align: -2px; margin-right: 3px; image-rendering: pixelated; }
 
 /* オンライン */
 .online { margin-top: 12px; padding: 8px 10px; background: var(--panel-2); border-radius: 4px; }
