@@ -25,6 +25,8 @@ export const DOT_ILLUST = {
   item_kabocha: 'kabocha',
   player1: 'character_murabito_young_man_green',
   player2: 'character_murabito_young_woman_green',
+  player3: 'character_murabito_young_man_blue',
+  player4: 'character_murabito_young_man_orange',
   box1: 'treasure_bronze',
   box2: 'treasure_silver',
   box3: 'treasure_gold',
