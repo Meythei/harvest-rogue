@@ -36,7 +36,7 @@ export const DOT_ILLUST = {
   weather_storm: 'weather_thunderstorm',
   hailstone: 'ishi_kori',
   battery: 'kandenchi_01_yellow',
-  // ここから下は追加要素の絵（商用利用は1作品30点までなので、合計30点に収めている）
+  // ここから下は追加要素の絵
   crow: 'karasu',
   oracle_good: 'character_kamisama_gold',
   oracle_bad: 'character_monster_shinigami_02',
@@ -44,6 +44,17 @@ export const DOT_ILLUST = {
   charm: 'magatama_sanshunojingi',
   item_rotten: 'doku_purple',
   harvester_bot: 'robotsojiki_black',
+  // 建物（合う素材がないもの・ベルトやパイプのように向きが大事なものはコードで描く）
+  b_terminal: 'pc_desktop',
+  b_fan: 'origamikazaguruma_blue',
+  b_biomass: 'kamado_gray',
+  b_fusion: 'crystal_sphere_lightblue',
+  b_collector: 'robotsojiki_white',
+  b_board: 'manaita_wood',
+  b_sprinkler: 'baketsu_water',
+  b_warp: 'ana_brown',
+  drone_ufo: 'ufo_03',
+  coin: 'coin_gold_01',
 };
 
 // 作物。grow=成熟までの秒数, food=食べた時の空腹回復, fuel=燃やした時の燃料, value=納品時のコイン

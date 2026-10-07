@@ -403,7 +403,7 @@ function updateHud() {
   $('time-text').textContent = `${g.quotaDay()}/${DAYS_PER_QUOTA}日目 残り${fmtTime(rem)}`;
   $('time-bar').style.width = `${(rem / (DAYS_PER_QUOTA * DAY_LENGTH)) * 100}%`;
   $('time-bar').classList.toggle('danger', rem < 20);
-  $('coin-text').textContent = `🪙 ${g.coins}`;
+  $('coin-text').textContent = `${g.coins}`;
   $('power-text').textContent = g.tech.energy ? `${Math.floor(g.power)} / ${g.powerCap()}` : '未解放';
   $('power-bar').style.width = `${(g.power / g.powerCap()) * 100}%`;
   $('combo-text').textContent = g.combo ? `${g.combo} ×${g.comboMult().toFixed(2)}` : '—';
@@ -814,6 +814,9 @@ loadSprites(new URLSearchParams(location.search).get('assets') !== 'off').then((
   const ic = $('charm-icon').getContext('2d');
   ic.imageSmoothingEnabled = false;
   drawSprite(ic, 'charm', 0, 0, 16, 16);
+  const cc = $('coin-icon').getContext('2d');
+  cc.imageSmoothingEnabled = false;
+  drawSprite(cc, 'coin', 0, 0, 20, 20);
 });
 renderMetaShop();
 renderTraits();
