@@ -1,6 +1,7 @@
 // 農場管理端末（HackNet 風のコンソール）
 import { CROPS, TECH, FARM_TIERS, BUILDINGS } from './data.js';
 import { setAudioEnabled, isAudioEnabled } from './audio.js';
+import { savePhysicsPref } from './physics.js';
 import { CHARMS, BOSSES, ORACLES, TRAITS, GAMBIT_CONDS, GAMBIT_ACTIONS, DEFAULT_GAMBITS } from './extras.js';
 
 const HELP = [
@@ -24,6 +25,7 @@ const HELP = [
   'crops                 作物の一覧',
   'log                   最近のログ',
   'sound on|off          サウンド',
+  'physics on|off        物理演算（実験機能）',
   'giveup                このランを諦めて終了',
   'clear                 画面を消す',
   'exit                  端末を閉じる',
@@ -144,6 +146,11 @@ export function runCommand(game, line) {
     case 'sound':
       if (args[0] === 'on' || args[0] === 'off') setAudioEnabled(args[0] === 'on');
       out.push(`サウンド: ${isAudioEnabled() ? 'on' : 'off'}`);
+      break;
+    case 'physics':
+      if (args[0] === 'on' || args[0] === 'off') { g.physics = args[0] === 'on'; savePhysicsPref(g.physics); }
+      out.push(`物理演算（実験機能）: ${g.physics ? 'on' : 'off'}`);
+      if (g.physics) out.push('作物に重さと弾みが付き、ぶつかり合います。カボチャは重く、トマトは軽い。');
       break;
     case 'giveup': g.giveUp(); return { exit: true, lines: [] };
     case 'clear': return { clear: true, lines: [] };
