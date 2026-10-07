@@ -95,7 +95,7 @@ export const TECH = {
 // 建物。req は解放条件、power は毎秒の消費電力
 export const BUILDINGS = {
   wall:      { name: '壁',               cost: 4,   req: { transport: 2 }, desc: '作物を止める。扇風機の風と組み合わせて経路を作る' },
-  fan:       { name: '扇風機',           cost: 12,  req: { transport: 2 }, rotate: true, desc: '向いている方向5マスの作物を吹き飛ばす' },
+  fan:       { name: '扇風機',           cost: 12,  req: { transport: 2 }, rotate: true, desc: '向いている方向5マスに風を送る。軽い作物ほど速く流れる' },
   belt:      { name: 'ベルトコンベア',   cost: 6,   req: { transport: 3 }, rotate: true, power: 0.04, desc: '歯車駆動。電力で作物を運ぶ' },
   pipe:      { name: 'パイプ',           cost: 12,  req: { transport: 4 }, rotate: true, power: 0.06, desc: '高速で作物を運ぶ' },
   wireless:  { name: '無線転送機',       cost: 60,  req: { transport: 5 }, desc: '入った作物を電力2で納品ボックスへ直送' },

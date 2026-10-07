@@ -25,8 +25,8 @@ const HELP = [
   'crops                 作物の一覧',
   'log                   最近のログ',
   'sound on|off          サウンド',
-  'physics on|off        物理演算（実験機能）',
-  'giveup                このランを諦めて終了',
+  'physics on|off        物理演算（既定でオン）',
+  'prestige              ランを区切って種籾を持ち帰る（giveup でも可）',
   'clear                 画面を消す',
   'exit                  端末を閉じる',
 ];
@@ -52,7 +52,8 @@ export function runCommand(game, line) {
     case 'quota': {
       const q = g.quota;
       out.push(`ノルマ #${g.quotaIndex + 1}: ${CROPS[q.crop].name} ${Math.floor(q.have)}/${q.need}`);
-      out.push(`残り時間: ${g.quotaRemaining().toFixed(0)} 秒 (${g.quotaDay()}日目)`);
+      out.push(`残り時間: ${g.quotaRemaining().toFixed(0)} 秒 (${g.quotaDay()}日目)${q.overdue ? ` 延長${q.overdue}回目` : ''}`);
+      if (g.stall) out.push(`手詰まりの兆し: ${g.stall.text}`);
       break;
     }
     case 'tech':
@@ -149,10 +150,10 @@ export function runCommand(game, line) {
       break;
     case 'physics':
       if (args[0] === 'on' || args[0] === 'off') { g.physics = args[0] === 'on'; savePhysicsPref(g.physics); }
-      out.push(`物理演算（実験機能）: ${g.physics ? 'on' : 'off'}`);
-      if (g.physics) out.push('作物に重さと弾みが付き、ぶつかり合います。カボチャは重く、トマトは軽い。');
+      out.push(`物理演算: ${g.physics ? 'on' : 'off'}`);
+      if (g.physics) out.push('作物に重さと弾みが付き、ぶつかり合います。扇風機や嵐の風では軽い作物ほど速く流れます。');
       break;
-    case 'giveup': g.giveUp(); return { exit: true, lines: [] };
+    case 'prestige': case 'giveup': g.prestige(); return { exit: true, lines: [] };
     case 'clear': return { clear: true, lines: [] };
     case 'exit': return { exit: true, lines: [] };
     default: out.push(`command not found: ${cmd}  ('help' で一覧)`);

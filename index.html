@@ -52,19 +52,22 @@
 
     <main id="stage">
       <canvas id="game" width="960" height="600"></canvas>
+      <div id="guide" class="hidden"></div>
+      <div id="feed"></div>
 
       <section id="title" class="overlay">
         <div class="card wide">
           <h1>ハーベスト・ローグ</h1>
           <p class="sub">空腹度を行動力にして畑を広げ、納期ノルマに挑む農業ローグライク自動化コロニーシム</p>
           <div class="traits">
-            <div class="label">特性を1つ選ぶ（長所と短所がセット）</div>
+            <div class="step-label"><span class="step-no">1</span>特性を1つ選ぶ <span class="small">長所と短所がセット</span></div>
             <div id="trait-buttons" class="buttons"></div>
           </div>
           <div class="traits">
-            <div class="label">縛りを付ける（いくつでも。付けた分だけ持ち帰る種籾が増える）</div>
+            <div class="step-label"><span class="step-no">2</span>縛りを付ける <span class="small">任意・いくつでも。付けた分だけ持ち帰る種籾が増える</span></div>
             <div id="pact-buttons" class="buttons"></div>
           </div>
+          <div class="step-label"><span class="step-no">3</span>始める <span class="small">Enter キーでも1人で始められます</span></div>
           <div class="row">
             <button id="start-1p" class="primary">1人で始める</button>
             <button id="start-2p">2人で始める（同じキーボード）</button>
@@ -73,26 +76,20 @@
             <div>
               <h2>遊び方</h2>
               <ul class="howto">
-                <li>耕す・植える・収穫する・納品する。すべての手作業で<b>空腹度</b>が減ります</li>
-                <li>収穫した作物は <b>食べる</b>（空腹度回復）／<b>納品する</b>（ノルマ・コイン）／<b>燃やす</b>（電力）の取り合い</li>
-                <li>期限までにノルマを達成すると、3つの中から1つアップグレードを選べます</li>
-                <li>途切れずに納品し続けるとコンボ倍率が上がり、ビートが重なっていきます</li>
-                <li>雹や嵐は天候防御パイロンで防げます</li>
-                <li>手持ちをまとめて納品すると中身の組み合わせで<b>役</b>が付き、倍率が上がります</li>
-                <li>ノルマのあとは<b>市場</b>でお守りを買えます。3つ目ごとのノルマには縛りの付いた<b>ボス</b>が出ます</li>
-                <li>毎朝<b>神託</b>が下り、その日だけの祝福か呪いが起きます。<b>補給物資</b>が落ちてきたら拾いに行きましょう</li>
-                <li>毎日ひとつ<b>旬</b>の作物が決まります。収穫に空腹度を使わず、納品のコインが1.5倍です</li>
-                <li>地面に放っておいた作物は<b>腐ります</b>。腐った作物は売れず、食べると最大空腹度が減ります</li>
-                <li>前日に予告される<b>カラスの群れ</b>は、近づくか<b>かかし</b>で追い払えます</li>
+                <li>耕す → 植える → 収穫する → <b>納品する</b>。手作業と移動で<b>空腹度</b>（行動力）が減ります</li>
+                <li>作物は <b>食べる</b>（空腹度回復）／<b>納品する</b>（ノルマ・コイン）／<b>燃やす</b>（電力）の取り合いです</li>
+                <li>3日以内にノルマを達成すると、<b>アップグレード</b>を1つ選び、<b>市場</b>でお守りを買って次のノルマへ進みます。期限を過ぎても1日ずつ延長して続けられます（延滞料あり）</li>
+                <li>行き詰まったら<b>プレステージ</b>でランを区切り、持ち帰った<b>種籾</b>で右の永続強化を買えます</li>
               </ul>
+              <p class="small">神託・旬・ボス・カラス・腐敗・納品の役などは、遊びながら画面上部と左下のお知らせで案内されます。くわしくはゲーム中の ヘルプ（H）へ。</p>
               <h2>操作</h2>
               <table class="keys">
                 <tr><th></th><th>1P</th><th>2P</th></tr>
-                <tr><td>移動</td><td>WASD</td><td>矢印キー</td></tr>
-                <tr><td>アクション</td><td>Space</td><td>Enter</td></tr>
-                <tr><td>食べる</td><td>Q</td><td>右Shift</td></tr>
+                <tr><td>移動</td><td>WASD / マスをクリック</td><td>矢印キー</td></tr>
+                <tr><td>アクション</td><td>Space / マスをクリック</td><td>Enter</td></tr>
+                <tr><td>食べる</td><td>Q / 「食べる」ボタン</td><td>右Shift</td></tr>
               </table>
-              <p class="small">1〜6: 植える作物 / マウス: 建設（R で回転・右クリックで解除）/ X: 撤去 / T: 端末 / H: ヘルプ / P: 一時停止</p>
+              <p class="small">クリックしたマスへ歩いて行き、着いたらアクションします（空き地は耕して植える）。ドラッグで何マスも順番に指示、右クリックで取り消し。<br>1〜6・ホイール: 植える作物 / 建設はボタンで選んでクリック、ドラッグで続けて置ける（ベルトはドラッグの向きに向く・R で回転・右クリックで解除）/ X: 撤去 / T: 端末 / H: ヘルプ / P: 一時停止</p>
             </div>
             <div>
               <h2>メタ進行 <span class="seeds">種籾 <b id="meta-seeds">0</b></span></h2>
@@ -107,17 +104,21 @@
 
       <section id="upgrade" class="overlay hidden">
         <div class="card wide">
+          <ol class="flowsteps"><li>ノルマ達成</li><li class="now">アップグレード</li><li>市場</li><li>次のノルマ</li></ol>
           <h1>ノルマ達成！</h1>
+          <div id="upgrade-gains" class="small"></div>
           <p class="sub">アップグレードを1つ選んでください（1〜3キーでも選べます）</p>
+          <div id="upgrade-next" class="next-quota"></div>
           <div id="upgrade-cards" class="upgrade-cards"></div>
         </div>
       </section>
 
       <section id="shop" class="overlay hidden">
         <div class="card wide">
+          <ol class="flowsteps"><li>ノルマ達成</li><li>アップグレード</li><li class="now">市場</li><li>次のノルマ</li></ol>
           <h1>市場</h1>
-          <p class="sub">コインでお守りを買えます（1〜3キーで購入 / R で品替え / Enter で次のノルマへ）</p>
-          <div id="shop-next" class="small"></div>
+          <p class="sub">コインでお守りを買えます（1〜3キーで購入 / R で品替え / Enter で次のノルマへ）。買わずに進んでもかまいません</p>
+          <div id="shop-next" class="next-quota"></div>
           <div id="shop-cards" class="upgrade-cards"></div>
           <h2>持っているお守り <span id="shop-slots" class="small"></span></h2>
           <div id="shop-owned" class="owned"></div>
@@ -131,9 +132,19 @@
 
       <section id="over" class="overlay hidden">
         <div class="card">
-          <h1>ラン終了</h1>
+          <h1>プレステージ</h1>
+          <p id="over-reason" class="sub"></p>
           <div id="over-stats"></div>
           <button id="over-back" class="primary">タイトルへ戻る</button>
+        </div>
+      </section>
+
+      <section id="prestige-offer" class="hidden">
+        <div id="prestige-title"></div>
+        <p id="prestige-reason" class="small"></p>
+        <div class="row">
+          <button id="prestige-yes" class="primary"></button>
+          <button id="prestige-no">まだ続ける</button>
         </div>
       </section>
 
@@ -173,6 +184,7 @@
           <button id="tool-move" title="納品ボックスを移動">移動</button>
           <button id="tool-demolish" title="建物を撤去（半額返金）">撤去 X</button>
           <button id="btn-console" title="農場管理端末">端末 T</button>
+          <button id="btn-prestige" title="ランを区切って種籾を持ち帰る">プレステージ</button>
           <button id="btn-help">ヘルプ H</button>
           <button id="btn-sound">音 ON</button>
         </div>
