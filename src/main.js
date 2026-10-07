@@ -141,7 +141,7 @@ function startGame(players) {
 
 function toTitle() {
   game = null;
-  show('over', false); show('upgrade', false); show('shop', false);
+  show('over', false); show('upgrade', false); show('shop', false); show('prestige-offer', false);
   renderMetaShop();
   renderTraits();
   renderPacts();
@@ -261,9 +261,13 @@ function updateHud() {
   $('quota-text').textContent = `${CROPS[q.crop].name} ${Math.floor(q.have)} / ${q.need}`;
   $('quota-bar').style.width = `${Math.min(100, (q.have / q.need) * 100)}%`;
   const rem = g.quotaRemaining();
-  $('time-text').textContent = `${g.quotaDay()}/${DAYS_PER_QUOTA}日目 残り${fmtTime(rem)}`;
-  $('time-bar').style.width = `${(rem / (DAYS_PER_QUOTA * DAY_LENGTH)) * 100}%`;
-  $('time-bar').classList.toggle('danger', rem < 20);
+  $('time-text').textContent = q.overdue
+    ? `延長${q.overdue} 残り${fmtTime(rem)}`
+    : `${g.quotaDay()}/${DAYS_PER_QUOTA}日目 残り${fmtTime(rem)}`;
+  $('time-text').classList.toggle('overdue', !!q.overdue);
+  $('time-bar').style.width = `${(rem / g.quotaSpan()) * 100}%`;
+  $('time-bar').classList.toggle('danger', rem < 20 || !!q.overdue);
+  updatePrestigeOffer();
   $('coin-text').textContent = `${g.coins}`;
   $('power-text').textContent = g.tech.energy ? `${Math.floor(g.power)} / ${g.powerCap()}` : '未解放';
   $('power-bar').style.width = `${(g.power / g.powerCap()) * 100}%`;
@@ -332,6 +336,25 @@ function updateHud() {
   if (changed('toolbar', tsig)) renderToolbar();
 }
 
+// ---- プレステージの提案 ------------------------------------------------------
+// 手詰まりを検知すると game.prestigeOffer が立つ。ツールバーのボタンからはいつでも開ける
+function updatePrestigeOffer() {
+  const o = game.prestigeOffer;
+  const sig = o ? `${o.kind}|${o.text}|${game.metaReward()}` : '';
+  if (!changed('prestige', sig)) return;
+  show('prestige-offer', !!o);
+  if (!o) return;
+  $('prestige-title').textContent = o.kind === 'manual' ? 'プレステージしますか？' : '行き詰まってきました。プレステージしませんか？';
+  $('prestige-reason').textContent = o.text;
+  $('prestige-yes').textContent = `プレステージする（種籾 +${game.metaReward()}）`;
+}
+
+function openPrestige() {
+  if (!game || game.state !== 'playing') return;
+  if (game.prestigeOffer) { game.dismissPrestige(); return; }
+  game.prestigeOffer = { kind: 'manual', text: `ここまでの成果（ノルマ達成 ${game.quotasCleared} 回・納品 ${game.totalDelivered} 個）を種籾にして持ち帰り、次のランを始められます`, t: game.t };
+}
+
 function buildPlayersPanel() {
   const wrap = $('players');
   wrap.innerHTML = '';
@@ -344,6 +367,12 @@ function buildPlayersPanel() {
       <div class="hunger"><div class="label">空腹度（行動力） <span class="hv"></span> <span class="small">${keys}</span></div><div class="bar"><div></div></div></div>
       <div class="inv"></div>`;
     d.querySelector('.who').prepend(iconCanvas(p.id === 0 ? 'player1' : 'player2', 28));
+    const eat = document.createElement('button');
+    eat.className = 'eat';
+    eat.textContent = '食べる';
+    eat.title = '手持ちの作物を1つ食べる（ノルマ対象以外から）';
+    eat.onclick = () => { if (!paused) game.eat(p.id); };
+    d.querySelector('.hunger').appendChild(eat);
     wrap.appendChild(d);
   });
 }
@@ -445,11 +474,14 @@ function renderHelp() {
     <li>タイトルで特性を1つ選び、縛りを付けるなら付けて始める</li>
     <li>${DAYS_PER_QUOTA}日（1日${DAY_LENGTH}秒）以内にノルマの作物を納品する。毎朝、神託と旬の作物が決まる</li>
     <li>達成したらアップグレードを1つ選び、市場でお守りを買って次のノルマへ。3つ目ごとのノルマはボス</li>
-    <li>期限までに届かなければラン終了。持ち帰った種籾でタイトルの永続強化を買う</li>
+    <li>期限を過ぎても1日ずつ延長して続けられる（延長のたびに延滞料としてコインの2割）。行き詰まったらプレステージでランを区切り、持ち帰った種籾でタイトルの永続強化を買う</li>
   </ol>
   <h2>基本</h2>
   <table>${rows({
     'アクション': '向いているマスに対して「耕す → 植える → 収穫する」、地面の作物を拾う、建物を使う（納品・発電・燃やす・加工）',
+    'クリック': 'マスをクリックすると歩いて行ってアクションする（空き地は耕して植える）。ドラッグで何マスも順番に指示、Shift+クリックで指示を足す、右クリックで取り消し。マウスを乗せると何をするかが出る',
+    'プレステージ': 'ランを区切って種籾を持ち帰る。延長が続く・延長の期限に届かない見込み・空腹で何もできない、のどれかになると自動で勧められる。ツールのボタンや端末の prestige でいつでもできる',
+    '物理演算': '作物に重さ・弾み・ぶつかり合いがある（既定でオン、端末の physics off で以前の動きに戻せる）。扇風機と嵐の風は空気抵抗として働き、軽い作物ほど速く流れ、手前の作物の陰では風が弱まる',
     '食べる': '手持ちの作物を1つ食べて空腹度を回復（ノルマ対象以外を優先）',
     '空腹度': '手作業と移動で減る。0になると動きが遅くなり作業できない',
     'コンボ': `納品が途切れずに続くと倍率が上がる。上限は輸送・納品の技術で解放される`,
@@ -537,7 +569,7 @@ window.addEventListener('keydown', (e) => {
     case 'KeyT': case 'Backquote': e.preventDefault(); openConsole(); break;
     case 'KeyH': toggleHelp(); break;
     case 'KeyP': paused = !paused; show('paused', paused); clearInputs(); break;
-    case 'Escape': selectTool(null); toggleHelp(false); break;
+    case 'Escape': selectTool(null); toggleHelp(false); game.cancelOrders(game.players[0]); break;
     default:
       if (/^Digit[1-6]$/.test(e.code)) {
         const c = game.crops[Number(e.code.slice(-1)) - 1];
@@ -555,14 +587,46 @@ function canvasTile(e) {
   return { x: Math.floor(x / TILE), y: Math.floor(y / TILE) };
 }
 
-canvas.addEventListener('mousemove', (e) => { cursor = canvasTile(e); });
+// マウス: 建設ツールを持っていないときは、クリックしたマスへ歩いて行ってアクションする。
+// ドラッグすると通ったマスを順番に指示できる（耕して植える・まとめて収穫など）。
+// 建設ツールを持っているときはドラッグで続けて置ける。ベルトとパイプはドラッグの向きに向く
+let drag = null;
+canvas.addEventListener('mousemove', (e) => {
+  cursor = canvasTile(e);
+  if (!drag || !game || game.state !== 'playing' || paused) return;
+  const { x, y } = cursor;
+  if (x === drag.last.x && y === drag.last.y) return;
+  if (drag.mode === 'order') game.orderAt(0, x, y, true);
+  else if (drag.mode === 'build' && BUILDINGS[tool]) {
+    // 斜めに動いたときは1マスずつ埋める
+    const steps = Math.abs(x - drag.last.x) + Math.abs(y - drag.last.y);
+    if (steps !== 1) { drag.last = { x, y }; drag.placed = null; return; }
+    const dir = DIRS.findIndex((d) => d.x === x - drag.last.x && d.y === y - drag.last.y);
+    if (BUILDINGS[tool].rotate) {
+      toolDir = dir;
+      // 直前に置いたベルトも、いま進んだ向きに合わせる
+      if (drag.placed && (drag.placed.type === 'belt' || drag.placed.type === 'pipe')) drag.placed.dir = dir;
+    }
+    drag.placed = game.build(tool, x, y, toolDir) ? game.bAt[y][x] : null;
+  }
+  drag.last = { x, y };
+});
 canvas.addEventListener('mouseleave', () => { cursor = null; });
-canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); selectTool(null); });
+window.addEventListener('mouseup', () => { drag = null; });
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  if (tool) selectTool(null);
+  else if (game) game.cancelOrders(game.players[0]);
+});
 canvas.addEventListener('mousedown', (e) => {
   if (!game || game.state !== 'playing' || e.button !== 0 || paused) return;
   initAudio();
   const { x, y } = canvasTile(e);
-  if (!tool) return;
+  if (!tool) {
+    game.orderAt(0, x, y, e.shiftKey);
+    drag = { mode: 'order', last: { x, y } };
+    return;
+  }
   if (tool === 'demolish') { game.demolish(x, y); return; }
   if (tool === 'move') {
     if (!movingBox) {
@@ -571,8 +635,18 @@ canvas.addEventListener('mousedown', (e) => {
     } else if (game.moveBox(movingBox, x, y)) { movingBox = null; renderToolbar(); }
     return;
   }
-  game.build(tool, x, y, toolDir);
+  const ok = game.build(tool, x, y, toolDir);
+  drag = { mode: 'build', last: { x, y }, placed: ok ? game.bAt[y][x] : null };
 });
+// ホイールで植える作物を切り替える
+canvas.addEventListener('wheel', (e) => {
+  if (!game || game.state !== 'playing') return;
+  e.preventDefault();
+  const i = game.crops.indexOf(game.seed);
+  const n = game.crops.length;
+  game.seed = game.crops[(i + (e.deltaY > 0 ? 1 : -1) + n) % n];
+  renderToolbar();
+}, { passive: false });
 
 $('start-1p').onclick = () => startGame(1);
 $('start-2p').onclick = () => startGame(2);
@@ -582,6 +656,9 @@ $('shop-leave').onclick = leaveShop;
 $('help-close').onclick = () => toggleHelp(false);
 $('btn-help').onclick = () => toggleHelp();
 $('btn-console').onclick = openConsole;
+$('btn-prestige').onclick = openPrestige;
+$('prestige-yes').onclick = () => { if (game) game.prestige(); };
+$('prestige-no').onclick = () => { if (game) game.dismissPrestige(); };
 $('tool-move').onclick = () => selectTool(tool === 'move' ? null : 'move');
 $('tool-demolish').onclick = () => selectTool(tool === 'demolish' ? null : 'demolish');
 $('btn-sound').onclick = () => { initAudio(); setAudioEnabled(!isAudioEnabled()); renderToolbar(); };
@@ -606,7 +683,7 @@ function frame(now) {
       if (game.state === 'upgrade') showUpgrade();
       if (game.state === 'over') endRun();
     }
-    game.render(ctx, { cursor: cursor && tool ? { ...cursor, tool, dir: toolDir } : null, movingBox });
+    game.render(ctx, { cursor: cursor && tool ? { ...cursor, tool, dir: toolDir } : null, movingBox, hover: !tool && !paused ? cursor : null });
     updateHud();
   } else {
     drawTitleBackground(now / 1000);

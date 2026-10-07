@@ -168,3 +168,11 @@ button.active { border-color: var(--accent); background: #4a4420; }
 #upgrade-gains:not(:empty) { margin: 0 0 6px; color: var(--good); }
 .bad-text { color: var(--bad); font-weight: bold; margin: 4px 0 0; }
 .bad-text:empty { display: none; }
+
+/* プレステージの提案（ゲームは止めずに右上に出す） */
+#prestige-offer { position: absolute; bottom: 8px; right: 8px; width: min(360px, 90%); background: rgba(30, 24, 10, 0.94); border: 2px solid var(--accent); border-radius: 6px; padding: 10px 12px; box-shadow: 0 4px 16px #0008; }
+#prestige-title { font-weight: bold; color: var(--accent); margin-bottom: 4px; }
+#prestige-reason { margin: 0 0 8px; }
+#prestige-offer .row { gap: 6px; flex-wrap: wrap; }
+#time-text.overdue { color: var(--bad); }
+.pcard .hunger button.eat { margin-top: 4px; padding: 2px 10px; font-size: 12px; }

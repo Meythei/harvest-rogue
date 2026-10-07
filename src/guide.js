@@ -15,12 +15,13 @@ function anyTile(game, fn) {
 function nextStep(game, p) {
   if (!p) return '';
   const q = game.quota;
-  if (p.hunger < p.maxHunger * 0.25 && p.inv.length) return '空腹度が少なくなっています。Q で手持ちの作物を食べましょう';
+  if (p.hunger < p.maxHunger * 0.25 && p.inv.length) return '空腹度が少なくなっています。Q か「食べる」で手持ちの作物を食べましょう';
+  if (q.overdue) return `期限を過ぎて延長中です（${q.overdue}回目）。行き詰まったら、ツールの「プレステージ」でランを区切れます`;
   if (game.quotaIndex > 0) return '';
-  if (!anyTile(game, (t) => t.soil)) return '左上の点線の枠が畑です。枠の中で Space を押して耕しましょう';
-  if (!anyTile(game, (t) => t.crop)) return '耕した土の前で Space を押すと、選んでいる作物（1〜6キー）を植えます';
-  if (anyTile(game, (t) => t.crop && t.crop.ripe)) return '熟した作物の前で Space を押して収穫し、落ちた作物も Space で拾います';
-  if (p.inv.includes(q.crop)) return `納品ボックス（宝箱）の前で Space を押すと、手持ちの${CROPS[q.crop].name}を納品できます`;
+  if (!anyTile(game, (t) => t.soil)) return '左上の点線の枠が畑です。枠の中のマスをクリック（ドラッグで何マスも）すると、耕して植えます';
+  if (!anyTile(game, (t) => t.crop)) return '耕した土をクリックすると、選んでいる作物（1〜6キー・ホイール）を植えます';
+  if (anyTile(game, (t) => t.crop && t.crop.ripe)) return '熟した作物をクリックして収穫し、落ちた作物もクリックで拾います';
+  if (p.inv.includes(q.crop)) return `納品ボックス（宝箱）をクリックすると、手持ちの${CROPS[q.crop].name}を納品できます`;
   return '育つまでのあいだに、畑を耕して植える数を増やしましょう';
 }
 
@@ -41,10 +42,8 @@ function renderFeed(game) {
 
 function overReason(game) {
   const q = game.quota;
-  const last = game.log?.[game.log.length - 1]?.msg || '';
-  if (last.includes('放棄')) return 'ランを放棄しました';
-  if (q && q.have < q.need) return `ノルマ #${game.quotaIndex + 1} 未達（${CROPS[q.crop].name} ${Math.floor(q.have)} / ${q.need}）`;
-  return '';
+  const where = q ? `ノルマ #${game.quotaIndex + 1}（${CROPS[q.crop].name} ${Math.floor(q.have)} / ${q.need}）で区切りました` : '';
+  return game.endReason ? `${where}。${game.endReason}` : where;
 }
 
 export function updateGuide(game, myIndex = 0) {

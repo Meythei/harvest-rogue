@@ -3,7 +3,7 @@ import {
   TILE, COLS, ROWS, DAY_LENGTH, DAYS_PER_QUOTA, QUOTA_GROWTH, CROPS, CROP_ORDER, HUNGER_COST,
   FARM_TIERS, FARM_ORIGIN, TECH, BUILDINGS, DIRS,
 } from './data.js';
-import { loadPhysicsPref, itemMass, popItem, stepHeightAndDrag, moveWithBounce, resolveContacts, hailImpact } from './physics.js';
+import { PHYS, loadPhysicsPref, popItem, stepHeightAndDrag, moveWithBounce, resolveContacts, hailImpact, applyWind, fanWindAt } from './physics.js';
 import {
   CHARMS, CHARM_KEYS, deliveryHand, BOSSES, BOSS_KEYS, ORACLES, GOOD_ORACLES, BAD_ORACLES, rollSupply,
   PACTS, ROT_TIME, DEFAULT_GAMBITS,
@@ -31,7 +31,7 @@ let nextId = 1;
 export class Game {
   constructor({ playerCount = 1, meta = { perks: {} }, trait = 'none', pacts = [], physics = loadPhysicsPref() } = {}) {
     const perks = meta.perks || {};
-    this.physics = physics; // 物理演算（実験機能）
+    this.physics = physics; // 物理演算（既定でオン）
     this.trait = trait;
     this.pacts = pacts.filter((k) => PACTS[k]);
     this.tiles = [];
@@ -107,6 +107,7 @@ export class Game {
       this.players.push({
         id: i, x: center(19), y: center(4 + i * 2), dir: 2, hunger: maxHunger, maxHunger,
         inv: ['ninjin', 'ninjin'], sick: 0, moving: false, anim: 0, warpCd: 0, fullDeliver: false,
+        queue: [], path: null, actCd: 0,
         input: { up: false, down: false, left: false, right: false },
       });
     }
@@ -220,6 +221,9 @@ export class Game {
     this.quota = { crop, need, have: 0, start: this.t, end: this.t + DAYS_PER_QUOTA * DAY_LENGTH, boss: plan.boss };
     this.upcoming = this.planQuota(q + 1);
     this.dayIdx = -1;
+    this.stall = null;
+    this.prestigeOffer = null;
+    this.prestigeSnooze = 0;
     // 悪天候は3つ目のノルマから
     const calm = q <= 1 && !this.pactOn('stormy');
     this.weather = { ...this.weather, phase: 'clear', timer: calm ? 9999 : rand(12, 30) };
@@ -231,7 +235,7 @@ export class Game {
 
   updateDay() {
     const d = Math.floor((this.t - this.quota.start) / DAY_LENGTH);
-    if (d === this.dayIdx || d >= DAYS_PER_QUOTA) return;
+    if (d === this.dayIdx || this.t >= this.quota.end) return;
     if (this.dayIdx >= 0) this.endOfDay();
     this.dayIdx = d;
     this.startDay();
@@ -286,9 +290,14 @@ export class Game {
     for (const p of this.players) p.hunger = Math.max(0, p.hunger - 8);
   }
 
-  quotaDay() { return Math.min(DAYS_PER_QUOTA, Math.floor((this.t - this.quota.start) / DAY_LENGTH) + 1); }
+  quotaDays() { return DAYS_PER_QUOTA + (this.quota.overdue || 0); }
+
+  quotaDay() { return Math.min(this.quotaDays(), Math.floor((this.t - this.quota.start) / DAY_LENGTH) + 1); }
 
   quotaRemaining() { return Math.max(0, this.quota.end - this.t); }
+
+  // 期限の残りを表すバーの長さの基準（延長中は1日）
+  quotaSpan() { return this.quota.overdue ? DAY_LENGTH : DAYS_PER_QUOTA * DAY_LENGTH; }
 
   // ---- 建物 ----------------------------------------------------------------
 
@@ -436,13 +445,17 @@ export class Game {
     const p = this.players[pi];
     if (!p || this.state !== 'playing') return;
     const { x, y } = this.facingTile(p);
-    if (!this.inBounds(x, y)) return;
+    this.actAt(p, x, y);
+  }
+
+  // マス (x, y) に対するアクション。何をしたかを返す（クリック操作で「耕して植える」を続けるため）
+  actAt(p, x, y) {
+    if (!this.inBounds(x, y)) return null;
     const b = this.bAt[y][x];
-    if (b) return this.interact(p, b);
+    if (b) { this.interact(p, b); return 'use'; }
 
     // 手作業で拾う
-    const near = this.items.filter((it) => it.state === 'ground' && !it.dead
-      && Math.hypot(it.x - center(x), it.y - center(y)) < TILE * 0.9);
+    const near = this.itemsNear(x, y);
     if (near.length && p.inv.length < this.invCap) {
       const cost = this.pickupCost();
       for (const it of near) {
@@ -452,31 +465,136 @@ export class Game {
         this.removeItem(it);
       }
       sfx('pickup');
-      return;
+      return 'pickup';
     }
 
     const tile = this.tiles[y][x];
     if (tile.crop) {
       if (tile.crop.ripe) {
         const cost = tile.crop.kind === this.seasonal ? 0 : HUNGER_COST.harvest;
-        if (!this.spend(p, cost, true)) return;
+        if (!this.spend(p, cost, true)) return null;
         this.harvestTile(x, y);
+        return 'harvest';
       }
-      return;
+      return null;
     }
     const hoe = this.has('hoe') ? 0 : 1;
     if (tile.soil) {
-      if (!this.spend(p, HUNGER_COST.plant * hoe)) return;
+      if (!this.spend(p, HUNGER_COST.plant * hoe)) return null;
       tile.crop = { kind: this.seed, t: 0, ripe: false };
       sfx('plant');
-      return;
+      return 'plant';
     }
     if (this.inFarm(x, y)) {
-      if (!this.spend(p, HUNGER_COST.till * hoe)) return;
+      if (!this.spend(p, HUNGER_COST.till * hoe)) return null;
       tile.soil = true;
       this.burst(center(x), center(y), '#8b5a2b', 6);
       sfx('till');
+      return 'till';
     }
+    return null;
+  }
+
+  itemsNear(x, y) {
+    return this.items.filter((it) => it.state === 'ground' && !it.dead
+      && Math.hypot(it.x - center(x), it.y - center(y)) < TILE * 0.9);
+  }
+
+  // マウスを乗せたマスで何ができるか（クリックしたときの動きと同じ順で調べる）
+  describeAction(p, x, y) {
+    if (!p || !this.inBounds(x, y)) return null;
+    const b = this.bAt[y][x];
+    if (b) {
+      const name = BUILDINGS[b.type]?.name || '';
+      const use = { box: '納品する', bike: '発電する', biomass: '燃やす', board: '切って増やす', collector: '取り出す', terminal: '端末を開く' }[b.type];
+      return use ? { text: `${name}: ${use}`, ok: true } : { text: name, ok: false };
+    }
+    const n = this.itemsNear(x, y).length;
+    if (n) return { text: p.inv.length < this.invCap ? `拾う ×${n}` : '手持ちがいっぱい', ok: p.inv.length < this.invCap };
+    const tile = this.tiles[y][x];
+    if (tile.crop) return tile.crop.ripe ? { text: `収穫: ${CROPS[tile.crop.kind].name}`, ok: true } : { text: `育成中 ${Math.floor((tile.crop.t / CROPS[tile.crop.kind].grow) * 100)}%`, ok: false };
+    if (tile.soil) return { text: `植える: ${CROPS[this.seed].name}`, ok: p.hunger > 0 };
+    if (this.inFarm(x, y)) return { text: `耕して植える: ${CROPS[this.seed].name}`, ok: p.hunger > 0 };
+    return { text: '歩いて行く', ok: true, walk: true };
+  }
+
+  // ---- クリック操作: 指示したマスへ歩いて行き、着いたらアクションする -------------
+
+  walkable(x, y) {
+    if (!this.inBounds(x, y)) return false;
+    const b = this.bAt[y][x];
+    return !(b && BLOCKS_PLAYER.has(b.type));
+  }
+
+  inReach(p, x, y) { return Math.hypot(p.x - center(x), p.y - center(y)) <= TILE * 1.25; }
+
+  // append: ドラッグで続けて指示したときは列に足す
+  orderAt(pi, x, y, append = false) {
+    const p = this.players[pi];
+    if (!p || this.state !== 'playing' || !this.inBounds(x, y)) return false;
+    if (!append) { p.queue = []; p.path = null; }
+    if (p.queue.some((o) => o.x === x && o.y === y) || p.queue.length >= 30) return false;
+    const d = this.describeAction(p, x, y);
+    p.queue.push({ x, y, walk: !!d?.walk });
+    return true;
+  }
+
+  cancelOrders(p) { p.queue = []; p.path = null; }
+
+  // 4方向の幅優先探索。目的のマスか、その上下左右（手が届くマス）までの道のり
+  findPath(p, x, y, walkOnly) {
+    const sx = tileOf(p.x), sy = tileOf(p.y);
+    const goal = (tx, ty) => (walkOnly ? tx === x && ty === y : Math.abs(tx - x) + Math.abs(ty - y) <= 1);
+    const prev = new Map();
+    const key = (tx, ty) => ty * COLS + tx;
+    const q = [[sx, sy]];
+    prev.set(key(sx, sy), null);
+    while (q.length) {
+      const [cx, cy] = q.shift();
+      if (goal(cx, cy) && this.walkable(cx, cy)) {
+        const path = [];
+        let k = key(cx, cy);
+        while (k !== null) { path.unshift({ x: k % COLS, y: Math.floor(k / COLS) }); k = prev.get(k); }
+        return path.slice(1).map((t) => ({ x: center(t.x), y: center(t.y) }));
+      }
+      for (const d of DIRS) {
+        const nx = cx + d.x, ny = cy + d.y;
+        const nk = key(nx, ny);
+        if (prev.has(nk) || !this.walkable(nx, ny)) continue;
+        prev.set(nk, key(cx, cy));
+        q.push([nx, ny]);
+      }
+    }
+    return null;
+  }
+
+  // キー入力が無いときだけ、指示の列にそって動く。返り値は移動方向
+  followOrders(p, dt) {
+    if (!p.queue?.length) return null;
+    p.actCd = Math.max(0, (p.actCd || 0) - dt);
+    const o = p.queue[0];
+    const arrived = o.walk ? Math.hypot(p.x - center(o.x), p.y - center(o.y)) < 4 : this.inReach(p, o.x, o.y);
+    if (arrived) {
+      if (p.actCd > 0) return null;
+      p.queue.shift(); p.path = null;
+      if (o.walk) return null;
+      const fx = center(o.x) - p.x, fy = center(o.y) - p.y;
+      if (Math.abs(fx) > 2 || Math.abs(fy) > 2) p.dir = Math.abs(fx) >= Math.abs(fy) ? (fx > 0 ? 0 : 2) : (fy > 0 ? 1 : 3);
+      // 空き地は耕してそのまま植える
+      if (this.actAt(p, o.x, o.y) === 'till') this.actAt(p, o.x, o.y);
+      p.actCd = 0.12;
+      return null;
+    }
+    if (!p.path) {
+      p.path = this.findPath(p, o.x, o.y, o.walk);
+      if (!p.path) { this.floater(center(o.x), center(o.y), '行けない', '#ff9090'); p.queue.shift(); return null; }
+    }
+    // 最後の区間は目的地へ直接向かう
+    const wp = p.path[0] || (o.walk ? { x: center(o.x), y: center(o.y) } : null);
+    if (!wp) { p.path = null; return { x: center(o.x) - p.x, y: center(o.y) - p.y }; }
+    const dx = wp.x - p.x, dy = wp.y - p.y;
+    if (Math.hypot(dx, dy) < 3) { p.path.shift(); return null; }
+    return { x: dx, y: dy };
   }
 
   // 収穫して地面に作物を落とす。放射能で巨大化した作物・お守り・神託で収穫数が増える
@@ -649,16 +767,29 @@ export class Game {
       p.warpCd = Math.max(0, p.warpCd - dt);
       let dx = (p.input.right ? 1 : 0) - (p.input.left ? 1 : 0);
       let dy = (p.input.down ? 1 : 0) - (p.input.up ? 1 : 0);
+      // キーで動かしたらクリックの指示はやめる
+      if (dx || dy) this.cancelOrders(p);
+      else {
+        const o = this.followOrders(p, dt);
+        if (o) { dx = o.x; dy = o.y; }
+      }
       p.moving = dx !== 0 || dy !== 0;
       if (p.moving) {
         if (Math.abs(dx) >= Math.abs(dy)) p.dir = dx > 0 ? 0 : 2; else p.dir = dy > 0 ? 1 : 3;
         const len = Math.hypot(dx, dy);
-        dx /= len; dy /= len;
         const speed = TILE * 4.2 * (p.hunger <= 0 ? 0.45 : 1) * (this.trait === 'hasty' ? 1.25 : 1);
+        // クリックで歩くときは目的地を通り過ぎない
+        const step = Math.min(speed * dt, p.queue?.length ? len : Infinity);
+        dx /= len; dy /= len;
         const ox = p.x, oy = p.y;
-        this.movePlayer(p, dx * speed * dt, 0);
-        this.movePlayer(p, 0, dy * speed * dt);
+        this.movePlayer(p, dx * step, 0);
+        this.movePlayer(p, 0, dy * step);
         const dist = Math.hypot(p.x - ox, p.y - oy) / TILE;
+        // クリックで歩いていて壁などに引っかかったら、その指示はあきらめる
+        if (p.queue?.length && dist < 0.002) {
+          p.stuckT = (p.stuckT || 0) + dt;
+          if (p.stuckT > 0.6) { const o = p.queue.shift(); p.path = null; p.stuckT = 0; if (o) this.floater(center(o.x), center(o.y), '行けない', '#ff9090'); }
+        } else p.stuckT = 0;
         p.hunger = Math.max(0, p.hunger - dist * (HUNGER_COST.movePerTile + HUNGER_COST.carryPerTilePerItem * p.inv.length) * this.moveCostMult());
         p.anim += dt * 10;
       }
@@ -895,19 +1026,41 @@ export class Game {
       if (o && BLOCKS_ITEM.has(o.type)) break;
       reach.push(`${x},${y}`);
     }
-    for (const it of this.items) {
-      if (it.dead || it.state !== 'ground') continue;
-      if (!reach.includes(`${tileOf(it.x)},${tileOf(it.y)}`)) continue;
-      const m = this.physics ? itemMass(it.crop) : 1;
-      it.vx += d.x * 420 * dt / m; it.vy += d.y * 420 * dt / m;
-      // 風の軸に寄せる
-      if (d.x) it.vy += (center(b.y) - it.y) * 3 * dt; else it.vx += (center(b.x) - it.x) * 3 * dt;
-      const sp = Math.hypot(it.vx, it.vy), cap = 170 / m;
-      if (sp > cap) { it.vx *= cap / sp; it.vy *= cap / sp; }
+    const inReach = this.items.filter((it) => !it.dead && it.state === 'ground'
+      && reach.includes(`${tileOf(it.x)},${tileOf(it.y)}`));
+    if (this.physics) this.fanWind(b, d, inReach, reach.length, dt);
+    else {
+      for (const it of inReach) {
+        it.vx += d.x * 420 * dt; it.vy += d.y * 420 * dt;
+        // 風の軸に寄せる
+        if (d.x) it.vy += (center(b.y) - it.y) * 3 * dt; else it.vx += (center(b.x) - it.x) * 3 * dt;
+        const sp = Math.hypot(it.vx, it.vy), cap = 170;
+        if (sp > cap) { it.vx *= cap / sp; it.vy *= cap / sp; }
+      }
     }
     if (Math.random() < dt * 6) {
       this.particles.push({ x: center(b.x) + d.x * 14, y: center(b.y) + d.y * 14, vx: d.x * 160, vy: d.y * 160, life: 0.5, color: '#ffffff66', size: 2 });
     }
+  }
+
+  // 物理演算での扇風機: 風速は離れるほど弱まり、手前の作物の陰に入ると風が弱まる。
+  // 作物は風との速度差で押されるので、軽い作物は速く、重い作物はゆっくり流れる
+  fanWind(b, d, items, len, dt) {
+    if (!len) return;
+    const fx = center(b.x), fy = center(b.y);
+    const along = (it) => (it.x - fx) * d.x + (it.y - fy) * d.y;
+    const side = (it) => (it.x - fx) * d.y - (it.y - fy) * d.x;
+    const sorted = items.map((it) => ({ it, a: along(it), s: side(it) })).sort((p, q) => p.a - q.a);
+    sorted.forEach((e, i) => {
+      let exposure = 1;
+      for (let j = 0; j < i; j++) {
+        const f = sorted[j];
+        if (Math.abs(f.s - e.s) < PHYS.radius * 1.6 && e.a - f.a < TILE * 1.5) exposure *= PHYS.fanShadow;
+      }
+      exposure = Math.max(0.25, exposure);
+      const v = fanWindAt((e.a - TILE / 2) / (len * TILE));
+      applyWind(e.it, d.x * v, d.y * v, dt, exposure);
+    });
   }
 
   collectorTick(b, dt) {
@@ -975,8 +1128,8 @@ export class Game {
       }
       it.onConveyor = onConveyor;
       if (storm && !onConveyor) {
-        const m = this.physics ? itemMass(it.crop) : 1;
-        it.vx += this.weather.wind.x * 160 * dt / m; it.vy += this.weather.wind.y * 160 * dt / m;
+        if (this.physics) applyWind(it, this.weather.wind.x * PHYS.stormWind, this.weather.wind.y * PHYS.stormWind, dt);
+        else { it.vx += this.weather.wind.x * 160 * dt; it.vy += this.weather.wind.y * 160 * dt; }
       }
       // 移動と衝突
       let nx, ny;
@@ -1224,11 +1377,89 @@ export class Game {
       this.upgradeOffers = this.makeOffers();
       return;
     }
-    if (this.t >= q.end) {
-      this.state = 'over';
-      this.say('ノルマ未達。ラン終了。');
-      sfx('fail');
-    }
+    if (this.t >= q.end) this.extendQuota();
+    this.updateStall();
+  }
+
+  // ---- 期限切れと手詰まり ----------------------------------------------------
+  // 期限を過ぎてもランは終わらない。期限が1日延び、そのたびに延滞料としてコインの2割を払う。
+  // 納品が追いつかなくなったのを検知したら、プレステージ（ランを区切って種籾を持ち帰る）を勧める
+
+  extendQuota() {
+    const q = this.quota;
+    q.overdue = (q.overdue || 0) + 1;
+    q.end += DAY_LENGTH;
+    const fee = Math.floor(this.coins * 0.2);
+    this.coins -= fee;
+    this.say(`ノルマの期限切れ。期限を1日延長（${q.overdue}回目）${fee ? `、延滞料 -${fee} コイン` : ''}`);
+    sfx('fail');
+    // 延長が決まったら、見送っていた提案ももう一度出せるようにする
+    this.prestigeSnooze = 0;
+  }
+
+  // 手元・地面・畑にある、ノルマの作物の数（育ちきるまでに期限が来るものは数えない）
+  quotaSupply() {
+    const c = this.quota.crop;
+    const rem = this.quotaRemaining();
+    let n = 0;
+    for (const p of this.players) n += p.inv.filter((k) => k === c).length;
+    for (const it of this.items) if (!it.dead && it.crop === c) n++;
+    for (const b of this.buildings) n += b.store.filter((k) => k === c).length;
+    for (const d of this.drones) n += d.carry.filter((k) => k === c).length;
+    this.tiles.forEach((row, y) => row.forEach((t, x) => {
+      if (!t.crop || t.crop.kind !== c) return;
+      const left = (CROPS[c].grow - t.crop.t) / Math.max(0.1, this.growthMult(x, y, c));
+      if (t.crop.ripe || left < rem) n += CROPS[c].yield;
+    }));
+    return n;
+  }
+
+  // 空腹度が尽きていて、食べられる物も、育っている作物も無い
+  starved() {
+    if (this.has('rancher')) return false; // 毎朝空腹度が戻る
+    const freeSoil = this.tiles.some((row) => row.some((t) => t.soil && !t.crop));
+    if (this.players.some((p) => p.inv.length || p.hunger >= HUNGER_COST.till || (freeSoil && p.hunger >= HUNGER_COST.plant))) return false;
+    if (this.items.some((it) => !it.dead)) return false;
+    if (this.buildings.some((b) => b.store.length) || this.drones.some((d) => d.carry.length)) return false;
+    return !this.tiles.some((row) => row.some((t) => t.crop));
+  }
+
+  // 1秒ごとに納品の進み具合を記録して、手詰まりかどうかを調べる
+  updateStall() {
+    const q = this.quota;
+    if (this.t < (this.stallNext || 0)) return;
+    this.stallNext = this.t + 1;
+    if (!this.paceLog || this.paceLog.q !== this.quotaIndex) this.paceLog = { q: this.quotaIndex, samples: [] };
+    const log = this.paceLog.samples;
+    log.push({ t: this.t, have: q.have });
+    while (log.length && log[0].t < this.t - DAY_LENGTH) log.shift();
+    this.stall = this.stallReason();
+    if (this.stall && !this.prestigeOffer && this.t >= (this.prestigeSnooze || 0)) {
+      this.prestigeOffer = { ...this.stall, t: this.t };
+      this.say(`手詰まりかもしれません: ${this.stall.text}`);
+      sfx('warn');
+    } else if (!this.stall && this.prestigeOffer) this.prestigeOffer = null;
+  }
+
+  stallReason() {
+    const q = this.quota;
+    if (this.starved()) return { kind: 'starved', text: '空腹度が尽きて、食べられる作物も育っている作物もありません' };
+    if (!q.overdue) return null;
+    if (q.overdue >= 2) return { kind: 'late', text: `期限の延長が${q.overdue}回続いています` };
+    // 延長に入ってからの納品ペースと手元の作物で、延長の期限までに届くかを見積もる
+    const log = this.paceLog.samples;
+    const span = this.t - log[0].t;
+    if (span < DAY_LENGTH * 0.5) return null;
+    const pace = (q.have - log[0].have) / span;
+    const short = q.need - q.have - pace * this.quotaRemaining() - this.quotaSupply() * this.slotMult('deliver', q.crop);
+    if (short > 0) return { kind: 'pace', text: `いまのペースでは、延長の期限までに${CROPS[q.crop].name}があと${Math.ceil(short)}個足りない見込みです` };
+    return null;
+  }
+
+  // 提案を見送る（1日は出さない。新しく延長になったらまた出す）
+  dismissPrestige() {
+    this.prestigeOffer = null;
+    this.prestigeSnooze = this.t + DAY_LENGTH;
   }
 
   // ---- アップグレード（ノルマ達成時に3択） ---------------------------------
@@ -1357,11 +1588,17 @@ export class Game {
     this.startQuota();
   }
 
-  giveUp() {
+  // プレステージ: ランを区切り、ここまでの成果を種籾にして持ち帰る
+  prestige() {
     if (this.state !== 'playing') return;
+    this.endReason = this.stall?.text || '';
     this.state = 'over';
-    this.say('ランを放棄しました。');
+    this.prestigeOffer = null;
+    this.say('プレステージ: ランを区切って種籾を持ち帰ります。');
+    sfx('quota');
   }
+
+  giveUp() { this.prestige(); }
 
   pactBonus() { return this.pacts.reduce((s, k) => s + PACTS[k].bonus, 0); }
 
@@ -1600,6 +1837,38 @@ export class Game {
       ctx.fillText(`${c.n}個  コンボ ×${c.combo.toFixed(2)}${c.rotten ? `  腐り ${c.rotten}個は0` : ''}`, bx + bw / 2, by + 46);
       if (c.hand) { ctx.fillStyle = '#ffd23f'; ctx.font = 'bold 12px sans-serif'; ctx.fillText(`役「${c.hand.name}」 +${c.extra.toFixed(2)}`, bx + bw / 2, by + 62); }
       ctx.globalAlpha = 1;
+    }
+
+    // クリックで指示したマス（番号は順番）
+    for (const p of this.players) {
+      (p.queue || []).forEach((o, i) => {
+        ctx.save();
+        ctx.strokeStyle = p.id === 0 ? '#ffe066cc' : '#ff9ad5cc'; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+        ctx.strokeRect(o.x * TILE + 5, o.y * TILE + 5, TILE - 10, TILE - 10);
+        ctx.restore();
+        if (p.queue.length > 1) {
+          ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
+          ctx.fillStyle = '#000a'; ctx.fillText(`${i + 1}`, center(o.x) + 1, center(o.y) + 4);
+          ctx.fillStyle = '#fff'; ctx.fillText(`${i + 1}`, center(o.x), center(o.y) + 3);
+        }
+      });
+    }
+
+    // マウスを乗せたマス: クリックしたら何をするか
+    if (view && view.hover && !view.cursor) {
+      const { x, y } = view.hover;
+      const a = this.describeAction(this.players[0], x, y);
+      if (a) {
+        ctx.strokeStyle = a.ok ? '#ffffffaa' : '#ff8080aa'; ctx.lineWidth = 2;
+        ctx.strokeRect(x * TILE + 1, y * TILE + 1, TILE - 2, TILE - 2);
+        if (!a.walk) {
+          ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center';
+          const tw = ctx.measureText(a.text).width + 12;
+          const bx = clamp(center(x) - tw / 2, 2, W - tw - 2), by = y > 0 ? y * TILE - 20 : (y + 1) * TILE + 2;
+          ctx.fillStyle = 'rgba(10,12,8,0.85)'; ctx.fillRect(bx, by, tw, 18);
+          ctx.fillStyle = a.ok ? '#fff' : '#ff9a9a'; ctx.fillText(a.text, bx + tw / 2, by + 13);
+        }
+      }
     }
 
     // 建築カーソル

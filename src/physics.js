@@ -1,10 +1,11 @@
-// 物理演算（実験機能）
-// 地面の作物に重さ・高さ・弾み・ぶつかり合いを持たせる。既定ではオフで、
+// 物理演算
+// 地面の作物に重さ・高さ・弾み・ぶつかり合いを持たせる。既定でオンで、
 // 端末の `physics on|off` か URL の `?physics=1` / `?physics=0` で切り替える。
-// オフのときは従来どおりの動き（摩擦で止まる・壁で止まる）のまま。
+// オフのときは以前の動き（摩擦で止まる・壁で止まる）のまま。
 import { TILE, COLS, ROWS } from './data.js';
 
-const PREF_KEY = 'harvest-rogue-physics';
+// 既定をオンに変えたので保存キーを改めた（実験機能だったころのオフ設定は引き継がない）
+const PREF_KEY = 'harvest-rogue-physics-v2';
 
 export const PHYS = {
   gravity: 900,        // 高さ方向の重力（px/s^2）
@@ -20,6 +21,12 @@ export const PHYS = {
   popMax: 220,
   hailRadius: 30,      // 雹が当たった作物を弾く半径
   hailKick: 140,
+  airDragCoef: 6,      // 風と作物の速度差にかかる空気抵抗（質量で割って加速度になる）
+  fanWind: 260,        // 扇風機のすぐ前の風速（px/s）。遠くなるほど弱まる
+  fanFalloff: 0.55,    // 届く範囲の端で風速がどれだけ落ちるか
+  fanShadow: 0.55,     // 手前の作物の陰に入ったときに残る風の割合
+  stormWind: 190,      // 嵐の風速（px/s）
+  tumble: 1.1,         // 強い風で軽い作物が跳ねる度合い
 };
 
 // 重い作物ほど風や扇風機で動きにくく、ぶつかったときに相手を押しやすい
@@ -31,12 +38,12 @@ export function loadPhysicsPref() {
     const q = new URLSearchParams(globalThis.location?.search || '').get('physics');
     if (q === '1' || q === 'on') { savePhysicsPref(true); return true; }
     if (q === '0' || q === 'off') { savePhysicsPref(false); return false; }
-    return globalThis.localStorage?.getItem(PREF_KEY) === '1';
-  } catch (e) { return false; }
+    return globalThis.localStorage?.getItem(PREF_KEY) !== '0';
+  } catch (e) { return true; }
 }
 
 export function savePhysicsPref(on) {
-  try { globalThis.localStorage?.setItem(PREF_KEY, on ? '1' : '0'); } catch (e) { /* 保存できない環境では毎回オフ */ }
+  try { globalThis.localStorage?.setItem(PREF_KEY, on ? '1' : '0'); } catch (e) { /* 保存できない環境では毎回オン */ }
 }
 
 // 出てきた作物を少し跳ね上げる
@@ -151,4 +158,26 @@ export function hailImpact(game, x, y) {
     it.vz = Math.max(it.vz || 0, s * 0.8);
     if (!it.z) it.z = 0.01;
   }
+}
+
+// 風（扇風機・嵐）: 風速と作物の速度の差に空気抵抗がかかる。
+// 加速度は質量で割るので、重い作物ほど動き出しが遅く、地面の摩擦に負けて遅く進む。
+// 風に沿わない向きの速度も抵抗で消えていくので、風の通り道に沿ってまっすぐ流れる。
+// exposure は手前の作物の陰に入ったときの風の残り（0〜1）
+export function applyWind(it, wx, wy, dt, exposure = 1) {
+  const m = itemMass(it.crop);
+  const k = Math.min(1, PHYS.airDragCoef * exposure * dt / m);
+  const ax = (wx * exposure - it.vx) * k, ay = (wy * exposure - it.vy) * k;
+  it.vx += ax; it.vy += ay;
+  // 軽い作物は強い風で転がって小さく跳ねる
+  const gust = Math.hypot(wx, wy) * exposure / m;
+  if ((it.z || 0) <= 0 && (it.vz || 0) <= 0 && gust > 160 && Math.random() < dt * PHYS.tumble * (gust / 160 - 0.8)) {
+    it.vz = 40 + Math.random() * 50 / m;
+    it.z = 0.01;
+  }
+}
+
+// 扇風機の風速（距離 0〜1 で弱まる）
+export function fanWindAt(dist01) {
+  return PHYS.fanWind * (1 - PHYS.fanFalloff * Math.min(1, Math.max(0, dist01)));
 }

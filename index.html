@@ -78,18 +78,18 @@
               <ul class="howto">
                 <li>耕す → 植える → 収穫する → <b>納品する</b>。手作業と移動で<b>空腹度</b>（行動力）が減ります</li>
                 <li>作物は <b>食べる</b>（空腹度回復）／<b>納品する</b>（ノルマ・コイン）／<b>燃やす</b>（電力）の取り合いです</li>
-                <li>3日以内にノルマを達成すると、<b>アップグレード</b>を1つ選び、<b>市場</b>でお守りを買って次のノルマへ進みます。未達ならラン終了</li>
-                <li>ラン終了で持ち帰った<b>種籾</b>で、右の永続強化を買えます</li>
+                <li>3日以内にノルマを達成すると、<b>アップグレード</b>を1つ選び、<b>市場</b>でお守りを買って次のノルマへ進みます。期限を過ぎても1日ずつ延長して続けられます（延滞料あり）</li>
+                <li>行き詰まったら<b>プレステージ</b>でランを区切り、持ち帰った<b>種籾</b>で右の永続強化を買えます</li>
               </ul>
               <p class="small">神託・旬・ボス・カラス・腐敗・納品の役などは、遊びながら画面上部と左下のお知らせで案内されます。くわしくはゲーム中の ヘルプ（H）へ。</p>
               <h2>操作</h2>
               <table class="keys">
                 <tr><th></th><th>1P</th><th>2P</th></tr>
-                <tr><td>移動</td><td>WASD</td><td>矢印キー</td></tr>
-                <tr><td>アクション</td><td>Space</td><td>Enter</td></tr>
-                <tr><td>食べる</td><td>Q</td><td>右Shift</td></tr>
+                <tr><td>移動</td><td>WASD / マスをクリック</td><td>矢印キー</td></tr>
+                <tr><td>アクション</td><td>Space / マスをクリック</td><td>Enter</td></tr>
+                <tr><td>食べる</td><td>Q / 「食べる」ボタン</td><td>右Shift</td></tr>
               </table>
-              <p class="small">1〜6: 植える作物 / マウス: 建設（R で回転・右クリックで解除）/ X: 撤去 / T: 端末 / H: ヘルプ / P: 一時停止</p>
+              <p class="small">クリックしたマスへ歩いて行き、着いたらアクションします（空き地は耕して植える）。ドラッグで何マスも順番に指示、右クリックで取り消し。<br>1〜6・ホイール: 植える作物 / 建設はボタンで選んでクリック、ドラッグで続けて置ける（ベルトはドラッグの向きに向く・R で回転・右クリックで解除）/ X: 撤去 / T: 端末 / H: ヘルプ / P: 一時停止</p>
             </div>
             <div>
               <h2>メタ進行 <span class="seeds">種籾 <b id="meta-seeds">0</b></span></h2>
@@ -132,10 +132,19 @@
 
       <section id="over" class="overlay hidden">
         <div class="card">
-          <h1>ラン終了</h1>
-          <p id="over-reason" class="bad-text"></p>
+          <h1>プレステージ</h1>
+          <p id="over-reason" class="sub"></p>
           <div id="over-stats"></div>
           <button id="over-back" class="primary">タイトルへ戻る</button>
+        </div>
+      </section>
+
+      <section id="prestige-offer" class="hidden">
+        <div id="prestige-title"></div>
+        <p id="prestige-reason" class="small"></p>
+        <div class="row">
+          <button id="prestige-yes" class="primary"></button>
+          <button id="prestige-no">まだ続ける</button>
         </div>
       </section>
 
@@ -175,6 +184,7 @@
           <button id="tool-move" title="納品ボックスを移動">移動</button>
           <button id="tool-demolish" title="建物を撤去（半額返金）">撤去 X</button>
           <button id="btn-console" title="農場管理端末">端末 T</button>
+          <button id="btn-prestige" title="ランを区切って種籾を持ち帰る">プレステージ</button>
           <button id="btn-help">ヘルプ H</button>
           <button id="btn-sound">音 ON</button>
         </div>
