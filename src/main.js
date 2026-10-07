@@ -5,6 +5,7 @@ import { initAudio, tickAudio, sfx, setAudioEnabled, isAudioEnabled, setCombo } 
 import { Game } from './game.js';
 import { runCommand } from './console.js';
 import { CHARMS, BOSSES, ORACLES, TRAITS, TRAIT_KEYS, PACTS, PACT_KEYS, GAMBIT_CONDS, GAMBIT_ACTIONS } from './extras.js';
+import { updateGuide } from './guide.js';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('game');
@@ -170,12 +171,14 @@ function endRun() {
 function upcomingText() {
   const u = game.upcoming;
   if (!u) return '';
-  const boss = u.boss ? ` <span class="boss">ボス「${BOSSES[u.boss].name}」: ${BOSSES[u.boss].desc}</span>` : '';
-  return `次のノルマ: ${CROPS[u.crop].name} ${game.quotaNeed(game.quotaIndex + 1, u.crop)}個${boss}`;
+  const boss = u.boss ? `<br><span class="boss">ボス「${BOSSES[u.boss].name}」: ${BOSSES[u.boss].desc}</span>（突破で +40 コイン）` : '';
+  return `次のノルマ #${game.quotaIndex + 2}: ${DAYS_PER_QUOTA}日以内に <b>${CROPS[u.crop].name} ${game.quotaNeed(game.quotaIndex + 1, u.crop)}個</b>${boss}`;
 }
 
 function showUpgrade() {
-  $('upgrade').querySelector('.sub').innerHTML = `アップグレードを1つ選んでください（1〜3キーでも選べます）<br>${upcomingText()}`;
+  // ノルマ達成と同じ瞬間に出たお知らせ（残り時間ボーナス・ボス突破など）を成果として見せる
+  $('upgrade-gains').textContent = game.log.filter((l) => l.t === game.t).map((l) => l.msg).join(' / ');
+  $('upgrade-next').innerHTML = upcomingText();
   const wrap = $('upgrade-cards');
   wrap.innerHTML = '';
   game.upgradeOffers.forEach((o, i) => {
@@ -253,7 +256,7 @@ function fmtTime(s) {
 function updateHud() {
   const g = game;
   const q = g.quota;
-  $('quota-no').textContent = `#${g.quotaIndex + 1}`;
+  updateGuide(g);
   if (changed('quota-icon', q.crop)) { $('quota-icon').innerHTML = ''; $('quota-icon').appendChild(iconCanvas(itemSpriteKey(q.crop))); }
   $('quota-text').textContent = `${CROPS[q.crop].name} ${Math.floor(q.have)} / ${q.need}`;
   $('quota-bar').style.width = `${Math.min(100, (q.have / q.need) * 100)}%`;
@@ -275,14 +278,20 @@ function updateHud() {
     const o = g.oracle && ORACLES[g.oracle];
     ot.textContent = o ? `${o.name}: ${o.desc}` : '—';
     ot.className = o ? (o.good ? 'good' : 'bad') : '';
-    $('season-text').innerHTML = (g.seasonal ? `${CROPS[g.seasonal].name}（収穫に空腹度なし・コイン1.5倍）` : '—')
+    ot.parentElement.title = ot.textContent;
+    // 情報欄は1行に収める。説明はマウスを乗せると出る
+    $('season-text').innerHTML = (g.seasonal ? CROPS[g.seasonal].name : '—')
       + (g.crowsTomorrow ? ' <span class="boss">明日カラス襲来</span>' : '');
-    const boss = q.boss ? `<span class="boss">ボス「${BOSSES[q.boss].name}」${BOSSES[q.boss].desc}</span> / ` : '';
+    $('season-text').parentElement.title = g.seasonal ? `旬の${CROPS[g.seasonal].name}は収穫に空腹度を使わず、納品のコインが1.5倍` : '';
+    // いまのボスはノルマ欄に出すので、ここは次のノルマだけ
     const u = g.upcoming;
-    $('next-text').innerHTML = `${boss}次: ${CROPS[u.crop].name}${u.boss ? `（ボス「${BOSSES[u.boss].name}」）` : ''}`;
+    $('next-text').innerHTML = `${CROPS[u.crop].name}${u.boss ? ` <span class="boss">ボス「${BOSSES[u.boss].name}」</span>` : ''}`;
+    $('next-text').parentElement.title = u.boss ? `次のノルマはボス「${BOSSES[u.boss].name}」: ${BOSSES[u.boss].desc}` : '';
+    $('quota-no').innerHTML = `#${g.quotaIndex + 1}${q.boss ? ` <span class="boss">ボス「${BOSSES[q.boss].name}」</span>` : ''}`;
+    $('quota-no').closest('.panel').title = q.boss ? `ボス「${BOSSES[q.boss].name}」: ${BOSSES[q.boss].desc}` : '';
     $('charm-list').innerHTML = g.charms.length
       ? g.charms.map((k) => `<span class="charm-chip" title="${CHARMS[k].desc}">${CHARMS[k].name}</span>`).join('') + `<span class="small">${g.charms.length}/${g.charmSlots}</span>`
-      : `<span class="small">なし（ノルマ達成後の市場で買える） 0/${g.charmSlots}</span>`;
+      : `<span class="small" title="ノルマ達成後の市場で買えます">なし 0/${g.charmSlots}</span>`;
   }
 
   const w = g.weather;
@@ -431,6 +440,13 @@ $('console-input').addEventListener('keyup', (e) => e.stopPropagation());
 function renderHelp() {
   const rows = (obj) => Object.entries(obj).map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
   $('help-body').innerHTML = `
+  <h2>1ランの流れ</h2>
+  <ol class="howto">
+    <li>タイトルで特性を1つ選び、縛りを付けるなら付けて始める</li>
+    <li>${DAYS_PER_QUOTA}日（1日${DAY_LENGTH}秒）以内にノルマの作物を納品する。毎朝、神託と旬の作物が決まる</li>
+    <li>達成したらアップグレードを1つ選び、市場でお守りを買って次のノルマへ。3つ目ごとのノルマはボス</li>
+    <li>期限までに届かなければラン終了。持ち帰った種籾でタイトルの永続強化を買う</li>
+  </ol>
   <h2>基本</h2>
   <table>${rows({
     'アクション': '向いているマスに対して「耕す → 植える → 収穫する」、地面の作物を拾う、建物を使う（納品・発電・燃やす・加工）',
