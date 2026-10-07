@@ -52,19 +52,22 @@
 
     <main id="stage">
       <canvas id="game" width="960" height="600"></canvas>
+      <div id="guide" class="hidden"></div>
+      <div id="feed"></div>
 
       <section id="title" class="overlay">
         <div class="card wide">
           <h1>ハーベスト・ローグ</h1>
           <p class="sub">空腹度を行動力にして畑を広げ、納期ノルマに挑む農業ローグライク自動化コロニーシム</p>
           <div class="traits">
-            <div class="label">特性を1つ選ぶ（長所と短所がセット）</div>
+            <div class="step-label"><span class="step-no">1</span>特性を1つ選ぶ <span class="small">長所と短所がセット</span></div>
             <div id="trait-buttons" class="buttons"></div>
           </div>
           <div class="traits">
-            <div class="label">縛りを付ける（いくつでも。付けた分だけ持ち帰る種籾が増える）</div>
+            <div class="step-label"><span class="step-no">2</span>縛りを付ける <span class="small">任意・いくつでも。付けた分だけ持ち帰る種籾が増える</span></div>
             <div id="pact-buttons" class="buttons"></div>
           </div>
+          <div class="step-label"><span class="step-no">3</span>始める <span class="small">Enter キーでも1人で始められます</span></div>
           <div class="row">
             <button id="start-1p" class="primary">1人で始める</button>
             <button id="start-2p">2人で始める（同じキーボード）</button>
@@ -73,18 +76,12 @@
             <div>
               <h2>遊び方</h2>
               <ul class="howto">
-                <li>耕す・植える・収穫する・納品する。すべての手作業で<b>空腹度</b>が減ります</li>
-                <li>収穫した作物は <b>食べる</b>（空腹度回復）／<b>納品する</b>（ノルマ・コイン）／<b>燃やす</b>（電力）の取り合い</li>
-                <li>期限までにノルマを達成すると、3つの中から1つアップグレードを選べます</li>
-                <li>途切れずに納品し続けるとコンボ倍率が上がり、ビートが重なっていきます</li>
-                <li>雹や嵐は天候防御パイロンで防げます</li>
-                <li>手持ちをまとめて納品すると中身の組み合わせで<b>役</b>が付き、倍率が上がります</li>
-                <li>ノルマのあとは<b>市場</b>でお守りを買えます。3つ目ごとのノルマには縛りの付いた<b>ボス</b>が出ます</li>
-                <li>毎朝<b>神託</b>が下り、その日だけの祝福か呪いが起きます。<b>補給物資</b>が落ちてきたら拾いに行きましょう</li>
-                <li>毎日ひとつ<b>旬</b>の作物が決まります。収穫に空腹度を使わず、納品のコインが1.5倍です</li>
-                <li>地面に放っておいた作物は<b>腐ります</b>。腐った作物は売れず、食べると最大空腹度が減ります</li>
-                <li>前日に予告される<b>カラスの群れ</b>は、近づくか<b>かかし</b>で追い払えます</li>
+                <li>耕す → 植える → 収穫する → <b>納品する</b>。手作業と移動で<b>空腹度</b>（行動力）が減ります</li>
+                <li>作物は <b>食べる</b>（空腹度回復）／<b>納品する</b>（ノルマ・コイン）／<b>燃やす</b>（電力）の取り合いです</li>
+                <li>3日以内にノルマを達成すると、<b>アップグレード</b>を1つ選び、<b>市場</b>でお守りを買って次のノルマへ進みます。未達ならラン終了</li>
+                <li>ラン終了で持ち帰った<b>種籾</b>で、右の永続強化を買えます</li>
               </ul>
+              <p class="small">神託・旬・ボス・カラス・腐敗・納品の役などは、遊びながら画面上部と左下のお知らせで案内されます。くわしくはゲーム中の ヘルプ（H）へ。</p>
               <h2>操作</h2>
               <table class="keys">
                 <tr><th></th><th>1P</th><th>2P</th></tr>
@@ -107,17 +104,21 @@
 
       <section id="upgrade" class="overlay hidden">
         <div class="card wide">
+          <ol class="flowsteps"><li>ノルマ達成</li><li class="now">アップグレード</li><li>市場</li><li>次のノルマ</li></ol>
           <h1>ノルマ達成！</h1>
+          <div id="upgrade-gains" class="small"></div>
           <p class="sub">アップグレードを1つ選んでください（1〜3キーでも選べます）</p>
+          <div id="upgrade-next" class="next-quota"></div>
           <div id="upgrade-cards" class="upgrade-cards"></div>
         </div>
       </section>
 
       <section id="shop" class="overlay hidden">
         <div class="card wide">
+          <ol class="flowsteps"><li>ノルマ達成</li><li>アップグレード</li><li class="now">市場</li><li>次のノルマ</li></ol>
           <h1>市場</h1>
-          <p class="sub">コインでお守りを買えます（1〜3キーで購入 / R で品替え / Enter で次のノルマへ）</p>
-          <div id="shop-next" class="small"></div>
+          <p class="sub">コインでお守りを買えます（1〜3キーで購入 / R で品替え / Enter で次のノルマへ）。買わずに進んでもかまいません</p>
+          <div id="shop-next" class="next-quota"></div>
           <div id="shop-cards" class="upgrade-cards"></div>
           <h2>持っているお守り <span id="shop-slots" class="small"></span></h2>
           <div id="shop-owned" class="owned"></div>
@@ -132,6 +133,7 @@
       <section id="over" class="overlay hidden">
         <div class="card">
           <h1>ラン終了</h1>
+          <p id="over-reason" class="bad-text"></p>
           <div id="over-stats"></div>
           <button id="over-back" class="primary">タイトルへ戻る</button>
         </div>
