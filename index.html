@@ -69,6 +69,16 @@
             <button id="start-1p" class="primary">1人で始める</button>
             <button id="start-2p">2人で始める（同じキーボード）</button>
           </div>
+          <div class="online">
+            <h2>オンライン協力（最大4人）</h2>
+            <div class="row">
+              <input id="mp-name" placeholder="名前" maxlength="12" autocomplete="off">
+              <button id="mp-create">部屋を作る</button>
+              <input id="mp-code" placeholder="部屋コード" maxlength="8" autocomplete="off">
+              <button id="mp-join">参加する</button>
+            </div>
+            <p class="small" id="mp-status"></p>
+          </div>
           <div class="cols">
             <div>
               <h2>遊び方</h2>
@@ -175,6 +185,7 @@
           <button id="btn-console" title="農場管理端末">端末 T</button>
           <button id="btn-help">ヘルプ H</button>
           <button id="btn-sound">音 ON</button>
+          <span id="room-badge"></span>
         </div>
       </div>
     </footer>

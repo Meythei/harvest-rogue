@@ -29,7 +29,7 @@ const HELP = [
   'exit                  端末を閉じる',
 ];
 
-export function runCommand(game, line) {
+export function runCommand(game, line, playerIndex = 0) {
   const [cmd, ...args] = line.trim().split(/\s+/);
   const out = [];
   const g = game;
@@ -130,7 +130,7 @@ export function runCommand(game, line) {
       const c = args[0];
       if (!c || !CROPS[c]) { out.push(`usage: seed <${g.crops.join('|')}>`); break; }
       if (!g.crops.includes(c)) { out.push(`${CROPS[c].name} はまだ解放されていません`); break; }
-      g.seed = c;
+      if (g.players[playerIndex]) g.players[playerIndex].seed = c;
       out.push(`植える作物: ${CROPS[c].name}`);
       break;
     }

@@ -8,7 +8,7 @@ import {
   PACTS, ROT_TIME, DEFAULT_GAMBITS,
 } from './extras.js';
 import { drawSprite, drawTile, drawSprout, itemSpriteKey, hasImage } from './sprites.js';
-import { sfx, setCombo } from './audio.js';
+import { sfx as playSfx, setCombo } from './audio.js';
 
 const W = COLS * TILE;
 const H = ROWS * TILE;
@@ -26,6 +26,10 @@ const tileOf = (px) => Math.floor(px / TILE);
 const center = (t) => t * TILE + TILE / 2;
 
 let nextId = 1;
+export const MAX_PLAYERS = 4;
+// 同期で作物を番号にするときの並び（腐った作物も含む）
+const SYNC_CROPS = Object.keys(CROPS);
+export const PLAYER_COLORS = ['#ffe066', '#ff9ad5', '#7fd4ff', '#9fe870'];
 
 export class Game {
   constructor({ playerCount = 1, meta = { perks: {} }, trait = 'none', pacts = [] } = {}) {
@@ -83,7 +87,6 @@ export class Game {
     this.pylonPowered = false;
     this.droneMode = 'gambit';
     this.invCap = 12;
-    this.seed = 'ninjin';
     if (perks.charm) this.addCharm(pick(CHARM_KEYS));
 
     this.t = 0;
@@ -100,17 +103,35 @@ export class Game {
     this.place('terminal', 22, 1, 0, true);
     this.place('box', 21, 4, 0, true);
 
-    const maxHunger = 100 + 20 * (perks.stomach || 0) + (trait === 'glutton' ? 40 : 0) - (trait === 'tinkerer' ? 20 : 0) - (this.pactOn('famine') ? 30 : 0);
-    for (let i = 0; i < playerCount; i++) {
-      this.players.push({
-        id: i, x: center(19), y: center(4 + i * 2), dir: 2, hunger: maxHunger, maxHunger,
-        inv: ['ninjin', 'ninjin'], sick: 0, moving: false, anim: 0, warpCd: 0, fullDeliver: false,
-        input: { up: false, down: false, left: false, right: false },
-      });
-    }
+    this.maxHunger = 100 + 20 * (perks.stomach || 0) + (trait === 'glutton' ? 40 : 0) - (trait === 'tinkerer' ? 20 : 0) - (this.pactOn('famine') ? 30 : 0);
+    this.netEvents = [];
+    for (let i = 0; i < playerCount; i++) this.addPlayer();
     this.startQuota();
     this.say('農場管理端末に接続しました。ノルマを確認してください。');
   }
+
+  // ---- プレイヤー -----------------------------------------------------------
+
+  addPlayer(name = '', netId = null) {
+    const i = this.players.length;
+    if (i >= MAX_PLAYERS) return -1;
+    this.players.push({
+      id: i, name: name || `P${i + 1}`, netId, away: false,
+      x: center(19), y: center(3 + i * 2), dir: 2, hunger: this.maxHunger, maxHunger: this.maxHunger,
+      inv: ['ninjin', 'ninjin'], sick: 0, moving: false, anim: 0, warpCd: 0, fullDeliver: false, seed: 'ninjin',
+      input: { up: false, down: false, left: false, right: false },
+    });
+    return i;
+  }
+
+  // 効果音。オンライン時はゲストにも同じ音を鳴らすため記録しておく
+  sfx(name) {
+    playSfx(name);
+    this.netEvents.push(name);
+    if (this.netEvents.length > 40) this.netEvents.shift();
+  }
+
+  activePlayers() { return this.players.filter((p) => !p.away); }
 
   // ---- 基本情報 ------------------------------------------------------------
 
@@ -272,7 +293,7 @@ export class Game {
     }
     this.banner = { title: `${this.dayIdx + 1}日目の神託「${o.name}」`, desc: o.desc, good: o.good, life: 4 };
     this.say(`神託「${o.name}」: ${o.desc}`);
-    sfx(o.good ? 'oracle' : 'warn');
+    this.sfx(o.good ? 'oracle' : 'warn');
   }
 
   endOfDay() {
@@ -301,6 +322,7 @@ export class Game {
     if (this.tiles[y][x].crop) return false;
     if (type === 'box' && this.buildings.filter((b) => b.type === 'box').length >= BOX_LIMIT) return false;
     for (const p of this.players) {
+      if (p.away) continue;
       if (BLOCKS_PLAYER.has(type) && tileOf(p.x) === x && tileOf(p.y) === y) return false;
     }
     return true;
@@ -323,10 +345,10 @@ export class Game {
 
   build(type, x, y, dir) {
     if (!this.isUnlocked(type)) return false;
-    if (this.coins < this.buildCost(type)) { this.floater(center(x), center(y), 'コイン不足', '#ff8080'); sfx('deny'); return false; }
+    if (this.coins < this.buildCost(type)) { this.floater(center(x), center(y), 'コイン不足', '#ff8080'); this.sfx('deny'); return false; }
     const b = this.place(type, x, y, BUILDINGS[type].rotate ? dir : 0);
-    if (!b) { sfx('deny'); return false; }
-    sfx('build');
+    if (!b) { this.sfx('deny'); return false; }
+    this.sfx('build');
     this.burst(center(x), center(y), '#ddd', 6);
     return true;
   }
@@ -344,7 +366,7 @@ export class Game {
     if (b.type === 'drone') this.drones = this.drones.filter((d) => d.station !== b);
     this.buildings = this.buildings.filter((o) => o !== b);
     this.bAt[y][x] = null;
-    sfx('till');
+    this.sfx('till');
     return true;
   }
 
@@ -354,11 +376,11 @@ export class Game {
     if (!this.canPlace('box', x, y) && !(x === box.x && y === box.y)) {
       // canPlace は自分自身を数えるので、移動時は数の制限を無視する
       const free = this.inBounds(x, y) && !this.bAt[y][x] && !this.tiles[y][x].crop;
-      if (!free) { this.bAt[box.y][box.x] = box; sfx('deny'); return false; }
+      if (!free) { this.bAt[box.y][box.x] = box; this.sfx('deny'); return false; }
     }
     box.x = x; box.y = y;
     this.bAt[y][x] = box;
-    sfx('build');
+    this.sfx('build');
     return true;
   }
 
@@ -402,7 +424,7 @@ export class Game {
     this.totalDelivered++;
     if (crop === this.quota.crop) this.quota.have += mult;
     this.floater(x, y - 10, `+${coins}`, crop === this.quota.crop ? '#ffe066' : '#fff');
-    sfx('deliver');
+    this.sfx('deliver');
     return { coins, base };
   }
 
@@ -422,7 +444,7 @@ export class Game {
   spend(p, amount, essential = false) {
     if (p.hunger <= 0 && amount > 0 && !essential) {
       this.floater(p.x, p.y - 30, 'お腹が空いて動けない…', '#ff9090');
-      sfx('deny');
+      this.sfx('deny');
       return false;
     }
     p.hunger = Math.max(0, p.hunger - amount * this.workMult());
@@ -431,7 +453,7 @@ export class Game {
 
   action(pi) {
     const p = this.players[pi];
-    if (!p || this.state !== 'playing') return;
+    if (!p || p.away || this.state !== 'playing') return;
     const { x, y } = this.facingTile(p);
     if (!this.inBounds(x, y)) return;
     const b = this.bAt[y][x];
@@ -448,7 +470,7 @@ export class Game {
         p.inv.push(it.crop);
         this.removeItem(it);
       }
-      sfx('pickup');
+      this.sfx('pickup');
       return;
     }
 
@@ -464,15 +486,15 @@ export class Game {
     const hoe = this.has('hoe') ? 0 : 1;
     if (tile.soil) {
       if (!this.spend(p, HUNGER_COST.plant * hoe)) return;
-      tile.crop = { kind: this.seed, t: 0, ripe: false };
-      sfx('plant');
+      tile.crop = { kind: this.crops.includes(p.seed) ? p.seed : 'ninjin', t: 0, ripe: false };
+      this.sfx('plant');
       return;
     }
     if (this.inFarm(x, y)) {
       if (!this.spend(p, HUNGER_COST.till * hoe)) return;
       tile.soil = true;
       this.burst(center(x), center(y), '#8b5a2b', 6);
-      sfx('till');
+      this.sfx('till');
     }
   }
 
@@ -487,7 +509,7 @@ export class Game {
     for (let i = 0; i < n; i++) this.spawnItem(c, center(x) + rand(-6, 6), center(y) + rand(-6, 6));
     this.burst(center(x), center(y), crop.mut ? '#7dff5a' : CROPS[c].color, 6);
     if (n > CROPS[c].yield) this.floater(center(x), center(y) - 8, `×${n}`, '#9fe870');
-    sfx('harvest');
+    this.sfx('harvest');
     return c;
   }
 
@@ -506,7 +528,7 @@ export class Game {
         const hand = this.bossIs('single') ? null : deliveryHand(fresh);
         let extra = hand ? hand.mult * (this.has('bulkorder') ? 1.5 : 1) : 0;
         if (full && this.has('crow')) extra += 0.5;
-        if (hand) { this.say(`納品の役「${hand.name}」 倍率 +${extra.toFixed(2)}`); sfx('hand'); }
+        if (hand) { this.say(`納品の役「${hand.name}」 倍率 +${extra.toFixed(2)}`); this.sfx('hand'); }
         const combo0 = this.comboMult();
         let base = 0, total = 0;
         batch.forEach((c, i) => {
@@ -523,7 +545,7 @@ export class Game {
         this.power = Math.min(this.powerCap(), this.power + 4);
         b.anim += 1;
         this.floater(cx, cy - 10, '+4⚡', '#ffe066');
-        sfx('pump');
+        this.sfx('pump');
         return;
       }
       case 'biomass': {
@@ -532,7 +554,7 @@ export class Game {
         const c = p.inv.splice(idx, 1)[0];
         b.fuel += this.fuelOf(c);
         this.burst(cx, cy, '#ff9a3c', 8);
-        sfx('burn');
+        this.sfx('burn');
         return;
       }
       case 'board': {
@@ -540,17 +562,17 @@ export class Game {
         if (idx < 0) { this.floater(cx, cy, '切る作物がない', '#ccc'); return; }
         if (p.inv.length >= this.invCap) { this.floater(cx, cy, '手持ちがいっぱい', '#ccc'); return; }
         // 手で切るのは1日の回数に上限がある（無限に増やせないように）
-        if (this.boardCharges <= 0) { this.floater(cx, cy, '今日はもう切れない', '#ccc'); sfx('deny'); return; }
+        if (this.boardCharges <= 0) { this.floater(cx, cy, '今日はもう切れない', '#ccc'); this.sfx('deny'); return; }
         if (!this.spend(p, HUNGER_COST.cut)) return;
         this.boardCharges--;
         p.inv.push(p.inv[idx]);
         this.floater(cx, cy, '×2', '#9fe870');
-        sfx('cut');
+        this.sfx('cut');
         return;
       }
       case 'collector': {
         while (b.store.length && p.inv.length < this.invCap) p.inv.push(b.store.pop());
-        sfx('pickup');
+        this.sfx('pickup');
         return;
       }
       case 'terminal':
@@ -590,11 +612,11 @@ export class Game {
       const loss = Math.min(5, p.maxHunger - 40);
       if (loss > 0) { p.maxHunger -= loss; p.sick += loss; p.hunger = Math.min(p.hunger, p.maxHunger); }
       this.floater(p.x, p.y - 30, `胃病み 最大空腹度 -${loss}`, '#c9a0dc');
-      sfx('rot');
+      this.sfx('rot');
       return;
     }
     this.floater(p.x, p.y - 30, `+${food} 空腹度`, '#9fe870');
-    sfx('eat');
+    this.sfx('eat');
   }
 
   // ---- 更新 ----------------------------------------------------------------
@@ -643,6 +665,7 @@ export class Game {
 
   updatePlayers(dt) {
     for (const p of this.players) {
+      if (p.away) continue;
       p.warpCd = Math.max(0, p.warpCd - dt);
       let dx = (p.input.right ? 1 : 0) - (p.input.left ? 1 : 0);
       let dy = (p.input.down ? 1 : 0) - (p.input.up ? 1 : 0);
@@ -664,7 +687,7 @@ export class Game {
       if (b && b.type === 'warp' && b.pair && p.warpCd <= 0) {
         p.x = center(b.pair.x); p.y = center(b.pair.y);
         p.warpCd = 1;
-        sfx('warp');
+        this.sfx('warp');
         this.burst(p.x, p.y, '#b48cff', 12);
       }
       this.collectAround(p, dt);
@@ -695,7 +718,7 @@ export class Game {
       const d = Math.hypot(it.x - p.x, it.y - p.y);
       if (tier === 2 && d < TILE * 0.6) {
         p.hunger = Math.max(0, p.hunger - this.pickupCost());
-        p.inv.push(it.crop); this.removeItem(it); sfx('pickup');
+        p.inv.push(it.crop); this.removeItem(it); this.sfx('pickup');
         if (p.inv.length >= this.invCap) break;
       } else if (tier >= 3 && d < TILE * 2.6) {
         // 回転しながら吸い寄せられる演出
@@ -713,7 +736,7 @@ export class Game {
       it.x = p.x + Math.cos(it.ang) * Math.max(0, it.r);
       it.y = p.y - 8 + Math.sin(it.ang) * Math.max(0, it.r) * 0.6;
       if (it.r <= 4) {
-        if (p.inv.length < this.invCap) { p.inv.push(it.crop); this.removeItem(it); sfx('pickup'); }
+        if (p.inv.length < this.invCap) { p.inv.push(it.crop); this.removeItem(it); this.sfx('pickup'); }
         else { it.state = 'ground'; it.vx = it.vy = 0; }
       }
     }
@@ -764,7 +787,7 @@ export class Game {
         if (this.inFarm(x, y) || this.bAt[y][x] || this.crates.some((c) => c.x === x && c.y === y)) continue;
         this.crates.push({ x, y, life: 40 });
         this.say('補給物資が落ちてきた！');
-        sfx('crate');
+        this.sfx('crate');
         break;
       }
     }
@@ -798,7 +821,7 @@ export class Game {
     this.floater(cx, cy - 10, text, '#ffe066');
     this.say(`補給物資: ${text}`);
     this.burst(cx, cy, '#c9a227', 10);
-    sfx('select');
+    this.sfx('select');
   }
 
   // ---- カラスの襲来（前日に予告される） ------------------------------------
@@ -825,7 +848,7 @@ export class Game {
       });
     }
     this.say(`カラスの群れ（${n}羽）が来た！ 近づくと追い払える。`);
-    sfx('crow');
+    this.sfx('crow');
   }
 
   updateCrows(dt) {
@@ -844,7 +867,7 @@ export class Game {
       }
       // 人が近づくと逃げる。かかしの範囲に入った作物はあきらめる
       if (this.players.some((p) => Math.hypot(p.x - c.x, p.y - c.y) < TILE * 1.4)) {
-        c.state = 'leave'; this.floater(c.x, c.y - 16, 'カァ！', '#ddd'); sfx('crow'); continue;
+        c.state = 'leave'; this.floater(c.x, c.y - 16, 'カァ！', '#ddd'); this.sfx('crow'); continue;
       }
       const crop = this.tiles[c.ty]?.[c.tx]?.crop;
       if (!crop || this.scaredAt(c.tx, c.ty)) { c.state = 'seek'; continue; }
@@ -859,7 +882,7 @@ export class Game {
           this.tiles[c.ty][c.tx].crop = null;
           this.burst(gx, gy, CROPS[crop.kind].color, 6);
           this.floater(gx, gy - 10, '食べられた', '#ff8080');
-          sfx('hit');
+          this.sfx('hit');
           c.eaten++;
           c.state = c.eaten >= 2 ? 'leave' : 'seek';
         }
@@ -1010,7 +1033,7 @@ export class Game {
         if (!it.cut) {
           it.cut = true;
           this.spawnItem(it.crop, it.x, it.y, { vx: it.vx, vy: it.vy, cut: true, lastTile: it.lastTile });
-          sfx('cut');
+          this.sfx('cut');
         }
         break;
       case 'collector':
@@ -1122,7 +1145,7 @@ export class Game {
       const a = pick(DIRS); w.wind = { x: a.x, y: a.y };
       w.phase = 'warning'; w.timer = 5;
       this.say(w.kind === 'hail' ? '雹の予報。パイロンで守るか、急いで収穫を。' : '嵐が近づいています。地面の作物が流されます。');
-      sfx('warn');
+      this.sfx('warn');
     } else if (w.phase === 'warning' && w.timer <= 0) {
       w.phase = 'active'; w.timer = w.kind === 'hail' ? 8 : 10; w.tick = 0;
     } else if (w.phase === 'active') {
@@ -1161,7 +1184,7 @@ export class Game {
         }
       }
     }
-    if (lost) { sfx('hit'); this.floater(w.cx * TILE, w.cy * TILE, `作物 -${lost}`, '#ff8080'); }
+    if (lost) { this.sfx('hit'); this.floater(w.cx * TILE, w.cy * TILE, `作物 -${lost}`, '#ff8080'); }
   }
 
   updateCombo(dt) {
@@ -1198,7 +1221,7 @@ export class Game {
         this.rerollCost = 0;
         this.say(`ボス「${BOSSES[q.boss].name}」を突破！ +40 コイン、市場の品替え1回無料`);
       }
-      sfx('quota');
+      this.sfx('quota');
       this.state = 'upgrade';
       this.upgradeOffers = this.makeOffers();
       return;
@@ -1206,7 +1229,7 @@ export class Game {
     if (this.t >= q.end) {
       this.state = 'over';
       this.say('ノルマ未達。ラン終了。');
-      sfx('fail');
+      this.sfx('fail');
     }
   }
 
@@ -1246,7 +1269,7 @@ export class Game {
       ? { type: 'growth', crop: sc, mult: 1.5, label: `${CROPS[sc].name}の成長速度 +50%` }
       : { type: 'deliver', crop: sc, mult: 1.5, label: `${CROPS[sc].name}の納品量 +50%` };
     offers.push({ id: 'slot', weight: 2, title: `倍率スロット`, desc: slot.label, apply: () => { this.slots.push(slot); } });
-    offers.push({ id: 'stomach', weight: 1, title: '胃袋拡張', desc: '最大空腹度 +25、全員の空腹度を全回復', apply: () => { for (const p of this.players) { p.maxHunger += 25; p.hunger = p.maxHunger; } } });
+    offers.push({ id: 'stomach', weight: 1, title: '胃袋拡張', desc: '最大空腹度 +25、全員の空腹度を全回復', apply: () => { this.maxHunger += 25; for (const p of this.players) { p.maxHunger += 25; p.hunger = p.maxHunger; } } });
     offers.push({ id: 'bag', weight: 1, title: '大きなカゴ', desc: '手持ちの上限 +6', apply: () => { this.invCap += 6; } });
     offers.push({ id: 'coins', weight: 1, title: '臨時収入', desc: '+80 コイン', apply: () => { this.coins += 80; } });
     offers.push({ id: 'combo', weight: 1, title: 'リズムキープ', desc: 'コンボの猶予 +1.5秒', apply: () => { this.comboWindow += 1.5; } });
@@ -1271,7 +1294,7 @@ export class Game {
     if (!o) return;
     o.apply();
     this.say(`アップグレード: ${o.title}`);
-    sfx('build');
+    this.sfx('build');
     // Balatro 風: アップグレードの後は市場でお守りを買える
     this.state = 'shop';
     this.rollShop();
@@ -1295,7 +1318,7 @@ export class Game {
     this.coins -= this.rerollCost;
     this.rerollCost = Math.max(5, this.rerollCost + 2);
     this.rollShop();
-    sfx('select');
+    this.sfx('select');
     return true;
   }
 
@@ -1313,7 +1336,7 @@ export class Game {
     this.addCharm(k);
     this.shopOffers.splice(i, 1);
     this.say(`お守り「${CHARMS[k].name}」を買った`);
-    sfx('deliver');
+    this.sfx('deliver');
     return true;
   }
 
@@ -1323,7 +1346,7 @@ export class Game {
     this.charms.splice(i, 1);
     if (k === 'metronome') this.comboWindow -= 3;
     this.coins += Math.floor(CHARMS[k].cost / 2);
-    sfx('till');
+    this.sfx('till');
     return true;
   }
 
@@ -1348,6 +1371,125 @@ export class Game {
   metaReward() {
     const base = this.quotasCleared * 2 + Math.floor(this.totalDelivered / 15) + 1;
     return Math.round(base * (1 + this.pactBonus()));
+  }
+
+  // ---- オンライン同期（ホストの状態をゲストへ配る） ------------------------
+
+  serialize() {
+    const r1 = (v) => Math.round(v * 10) / 10;
+    const tiles = [];
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const t = this.tiles[y][x];
+        let v = (t.soil ? 1 : 0) | (t.flower ? 2 : 0);
+        if (t.crop) {
+          v |= (SYNC_CROPS.indexOf(t.crop.kind) + 1) << 2;
+          v |= (t.crop.ripe ? 1 : 0) << 6;
+          v |= (t.crop.mut ? 1 : 0) << 7;
+          v |= Math.min(15, Math.floor((t.crop.t / CROPS[t.crop.kind].grow) * 16)) << 8;
+        }
+        tiles.push(v);
+      }
+    }
+    const events = this.netEvents.splice(0);
+    return {
+      t: r1(this.t), state: this.state, quotaIndex: this.quotaIndex, quotasCleared: this.quotasCleared,
+      totalDelivered: this.totalDelivered, totalCoins: this.totalCoins, bestCombo: this.bestCombo,
+      quota: { ...this.quota, have: r1(this.quota.have) }, coins: this.coins, power: r1(this.power),
+      powered: this.powered, pylonPowered: this.pylonPowered, combo: this.combo, comboTimer: r1(this.comboTimer),
+      comboWindow: this.comboWindow, tech: this.tech, unlocks: this.unlocks, crops: this.crops, slots: this.slots,
+      invCap: this.invCap, droneMode: this.droneMode,
+      trait: this.trait, pacts: this.pacts, charms: this.charms, charmSlots: this.charmSlots, boardCharges: this.boardCharges,
+      oracle: this.oracle, banner: this.banner, discount: this.discount, dayIdx: this.dayIdx, shopOffers: this.shopOffers,
+      rerollCost: this.rerollCost, seasonal: this.seasonal, crowsTomorrow: this.crowsTomorrow, calcPop: this.calcPop,
+      crates: this.crates.map((c) => [c.x, c.y, r1(c.life)]),
+      crows: this.crows.map((c) => [Math.round(c.x), Math.round(c.y), c.state, r1(c.flap || 0), c.tx ?? null]),
+      weather: { phase: this.weather.phase, kind: this.weather.kind, timer: r1(this.weather.timer), cx: r1(this.weather.cx), cy: r1(this.weather.cy), r: this.weather.r, wind: this.weather.wind, flash: r1(this.weather.flash) },
+      tiles,
+      buildings: this.buildings.map((b) => [b.id, b.type, b.x, b.y, b.dir, b.store.length, (b.fuel > 0 || b.burn > 0) ? 1 : 0, b.pair ? b.pair.id : 0, r1(b.anim)]),
+      items: this.items.map((it) => [it.id, SYNC_CROPS.indexOf(it.crop), Math.round(it.x), Math.round(it.y), it.state === 'ground' ? 0 : 1, it.cut ? 1 : 0, it.onConveyor ? 1 : 0, Math.round(it.age || 0)]),
+      drones: this.drones.map((d) => [Math.round(d.x), Math.round(d.y), d.carry.length ? SYNC_CROPS.indexOf(d.carry[0]) : -1]),
+      players: this.players.map((p) => ({ id: p.id, name: p.name, netId: p.netId, away: p.away, x: Math.round(p.x), y: Math.round(p.y), dir: p.dir, hunger: r1(p.hunger), maxHunger: p.maxHunger, sick: p.sick, inv: p.inv, moving: p.moving, seed: p.seed })),
+      hail: this.hail.map((h) => [Math.round(h.x), Math.round(h.y), Math.round(h.h), r1(h.life)]),
+      floaters: this.floaters.filter((f) => !f.net).map((f) => [Math.round(f.x), Math.round(f.y), f.text, f.color, r1(f.life)]),
+      offers: this.state === 'upgrade' ? this.upgradeOffers.map((o) => ({ id: o.id, title: o.title, desc: o.desc })) : null,
+      events,
+    };
+  }
+
+  applySnapshot(s) {
+    for (const k of ['t', 'state', 'quotaIndex', 'quotasCleared', 'totalDelivered', 'totalCoins', 'bestCombo', 'quota', 'coins', 'power', 'powered', 'pylonPowered', 'combo', 'comboTimer', 'comboWindow', 'tech', 'unlocks', 'crops', 'slots', 'invCap', 'droneMode', 'weather',
+      'trait', 'pacts', 'charms', 'charmSlots', 'boardCharges', 'oracle', 'banner', 'discount', 'dayIdx', 'shopOffers',
+      'rerollCost', 'seasonal', 'crowsTomorrow', 'calcPop']) this[k] = s[k];
+    this.crates = s.crates.map(([x, y, life]) => ({ x, y, life }));
+    const oldC = this.crows;
+    this.crows = s.crows.map(([x, y, state, flap, tx], i) => {
+      const c = oldC[i] || { x, y };
+      Object.assign(c, { tx: tx, ty: c.ty, gx: x, gy: y, state, flap });
+      return c;
+    });
+    s.tiles.forEach((v, i) => {
+      const t = this.tiles[Math.floor(i / COLS)][i % COLS];
+      t.soil = !!(v & 1); t.flower = !!(v & 2);
+      const ci = (v >> 2) & 15;
+      if (ci) {
+        const kind = SYNC_CROPS[ci - 1];
+        t.crop = { kind, ripe: !!((v >> 6) & 1), mut: !!((v >> 7) & 1), t: (((v >> 8) & 15) / 16) * CROPS[kind].grow };
+      } else t.crop = null;
+    });
+    const oldB = new Map(this.buildings.map((b) => [b.id, b]));
+    this.bAt = Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+    this.buildings = s.buildings.map(([id, type, x, y, dir, store, fire, pair, anim]) => {
+      const b = oldB.get(id) || { id };
+      Object.assign(b, { type, x, y, dir, store: new Array(store), fuel: fire, burn: 0, pairId: pair, anim });
+      this.bAt[y][x] = b;
+      return b;
+    });
+    const byId = new Map(this.buildings.map((b) => [b.id, b]));
+    for (const b of this.buildings) b.pair = b.pairId ? byId.get(b.pairId) : null;
+    const oldI = new Map(this.items.map((it) => [it.id, it]));
+    this.items = s.items.map(([id, ci, x, y, st, cut, conv, age]) => {
+      const it = oldI.get(id) || { id, x, y, age };
+      if (Math.abs(it.age - age) > 1.5) it.age = age;
+      Object.assign(it, { crop: SYNC_CROPS[ci], tx: x, ty: y, state: st === 0 ? 'ground' : 'orbit', cut: !!cut, onConveyor: !!conv });
+      return it;
+    });
+    const oldD = this.drones;
+    this.drones = s.drones.map(([x, y, c], i) => {
+      const d = oldD[i] || { x, y, bob: 0 };
+      Object.assign(d, { tx: x, ty: y, carry: c >= 0 ? [SYNC_CROPS[c]] : [] });
+      return d;
+    });
+    s.players.forEach((sp) => {
+      let p = this.players[sp.id];
+      if (!p) { p = { ...sp, anim: 0, input: { up: false, down: false, left: false, right: false } }; this.players[sp.id] = p; }
+      const { x, y, ...rest } = sp;
+      Object.assign(p, rest, { tx: x, ty: y });
+      if (p.x === undefined || Math.hypot(p.x - x, p.y - y) > TILE * 3) { p.x = x; p.y = y; }
+    });
+    this.players.length = s.players.length;
+    this.hail = s.hail.map(([x, y, h, life]) => ({ x, y, h, life }));
+    this.floaters = s.floaters.map(([x, y, text, color, life]) => ({ x, y, text, color, life, net: true }));
+    this.upgradeOffers = s.offers;
+    for (const e of s.events || []) playSfx(e);
+    setCombo(this.combo);
+  }
+
+  // ゲスト側: スナップショット間を補間して滑らかに見せる
+  smooth(dt) {
+    const k = Math.min(1, dt * 14);
+    const lerp = (o) => { if (o.tx !== undefined) { o.x += (o.tx - o.x) * k; o.y += (o.ty - o.y) * k; } };
+    for (const p of this.players) { lerp(p); if (p.moving) p.anim += dt * 10; }
+    for (const it of this.items) { lerp(it); it.age += dt; }
+    for (const d of this.drones) { lerp(d); d.bob += dt * 6; }
+    for (const c of this.crows) { if (c.gx !== undefined) { c.x += (c.gx - c.x) * k; c.y += (c.gy - c.y) * k; } c.flap += dt * 12; }
+    if (this.banner) this.banner.life -= dt;
+    if (this.calcPop) this.calcPop.life -= dt;
+    this.t += dt;
+    for (const f of this.floaters) { f.y -= 30 * dt; f.life -= dt; }
+    for (const h of this.hail) { h.h -= dt * 400; if (h.h <= 0) h.life -= dt * 3; }
+    for (const p of this.particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 200 * dt; p.life -= dt; }
+    this.particles = this.particles.filter((p) => p.life > 0);
   }
 
   // ---- 描画 ----------------------------------------------------------------
@@ -1452,9 +1594,10 @@ export class Game {
 
     // プレイヤー
     for (const p of this.players) {
+      if (p.away) continue;
       const ft = this.facingTile(p);
       if (this.inBounds(ft.x, ft.y)) {
-        ctx.strokeStyle = p.id === 0 ? '#ffe066' : '#ff9ad5';
+        ctx.strokeStyle = PLAYER_COLORS[p.id];
         ctx.lineWidth = 2;
         ctx.strokeRect(ft.x * TILE + 2, ft.y * TILE + 2, TILE - 4, TILE - 4);
       }
@@ -1463,12 +1606,12 @@ export class Game {
       const hop = p.moving ? Math.abs(Math.sin(p.anim)) * 3 : 0;
       ctx.save();
       if (p.dir === 2) { ctx.translate(p.x, 0); ctx.scale(-1, 1); ctx.translate(-p.x, 0); }
-      drawSprite(ctx, p.id === 0 ? 'player1' : 'player2', p.x - 18, p.y - 30 - hop, 36, 44);
+      drawSprite(ctx, `player${p.id + 1}`, p.x - 18, p.y - 30 - hop, 36, 44);
       ctx.restore();
       if (this.players.length > 1) {
-        ctx.fillStyle = p.id === 0 ? '#ffe066' : '#ff9ad5';
+        ctx.fillStyle = PLAYER_COLORS[p.id];
         ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText(`P${p.id + 1}`, p.x, p.y - 34 - hop);
+        ctx.fillText(p.name, p.x, p.y - 34 - hop);
       }
       if (p.inv.length) {
         // 背負っている作物
