@@ -142,3 +142,4 @@ button.active { border-color: var(--accent); background: #4a4420; }
   .upgrade-card { min-height: 0; }
 }
 #charm-icon { width: 14px; height: 14px; vertical-align: -2px; margin-right: 3px; image-rendering: pixelated; }
+#coin-icon { width: 20px; height: 20px; vertical-align: -3px; margin-right: 4px; image-rendering: pixelated; }

@@ -7,7 +7,7 @@ import {
   CHARMS, CHARM_KEYS, deliveryHand, BOSSES, BOSS_KEYS, ORACLES, GOOD_ORACLES, BAD_ORACLES, rollSupply,
   PACTS, ROT_TIME, DEFAULT_GAMBITS,
 } from './extras.js';
-import { drawSprite, drawTile, drawSprout, itemSpriteKey } from './sprites.js';
+import { drawSprite, drawTile, drawSprout, itemSpriteKey, hasImage } from './sprites.js';
 import { sfx, setCombo } from './audio.js';
 
 const W = COLS * TILE;
@@ -1480,6 +1480,11 @@ export class Game {
     for (const d of this.drones) {
       const y = d.y - 18 + Math.sin(d.bob) * 3;
       ctx.fillStyle = '#0003'; ctx.fillRect(d.x - 7, d.y + 4, 14, 3);
+      if (hasImage('drone_ufo')) {
+        drawSprite(ctx, 'drone_ufo', d.x - 14, y - 12, 28, 20);
+        if (d.carry.length) drawSprite(ctx, itemSpriteKey(d.carry[0]), d.x - 6, y + 6, 12, 12);
+        continue;
+      }
       ctx.fillStyle = '#5d6673'; ctx.fillRect(d.x - 9, y - 4, 18, 8);
       ctx.fillStyle = '#7fd4ff'; ctx.fillRect(d.x - 3, y - 2, 6, 4);
       ctx.fillStyle = '#cfd6de';
@@ -1606,6 +1611,7 @@ export class Game {
       ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(10, 0); ctx.lineTo(-4, -7); ctx.lineTo(-4, 7); ctx.closePath(); ctx.fill();
       ctx.restore();
     };
+    if (hasImage(`b_${b.type}`)) { this.drawBuildingSprite(ctx, b, px, py, cx, cy, arrow); return; }
     switch (b.type) {
       case 'box': {
         const tier = Math.min(3, this.tech.deliver);
@@ -1725,6 +1731,48 @@ export class Game {
         break;
       }
       default: r(4, 4, 32, 32, '#888');
+    }
+  }
+
+  // DOT ILLUST の絵が読み込めた建物。状態がわかる部分（向き・火・水しぶきなど）だけ上から描き足す
+  drawBuildingSprite(ctx, b, px, py, cx, cy, arrow) {
+    drawSprite(ctx, `b_${b.type}`, px + 3, py + 3, TILE - 6, TILE - 6);
+    switch (b.type) {
+      case 'fan': arrow('#3a6ea5cc'); break;
+      case 'biomass':
+        if (b.fuel > 0 || b.burn > 0) {
+          ctx.fillStyle = '#ff7a1a'; ctx.fillRect(cx - 6, py + 22 + Math.sin(this.t * 12) * 2, 12, 8);
+          ctx.fillStyle = '#ffd23f'; ctx.fillRect(cx - 3, py + 24, 6, 5);
+        }
+        break;
+      case 'fusion':
+        ctx.save(); ctx.translate(cx, cy); ctx.strokeStyle = '#7fd4ffaa'; ctx.lineWidth = 2;
+        ctx.rotate(b.anim * 2); ctx.beginPath(); ctx.ellipse(0, 0, 18, 6, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+        break;
+      case 'collector':
+        arrow('#f6e05e');
+        if (b.store.length) { ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'right'; ctx.fillText(b.store.length, px + 36, py + 36); }
+        break;
+      case 'sprinkler':
+        if (this.powered) {
+          ctx.fillStyle = '#bfe9ff';
+          for (let i = 0; i < 6; i++) {
+            const a = this.t * 4 + i * (Math.PI / 3);
+            ctx.fillRect(cx + Math.cos(a) * 14 - 1, py + 8 + Math.sin(a) * 6 - 1, 3, 3);
+          }
+        }
+        break;
+      case 'warp':
+        if (b.pair) {
+          ctx.fillStyle = `rgba(180,140,255,${0.3 + 0.15 * Math.sin(this.t * 6)})`;
+          ctx.beginPath(); ctx.ellipse(cx, cy, 14, 9, 0, 0, Math.PI * 2); ctx.fill();
+        }
+        break;
+      default: break;
+    }
+    if ((b.type === 'collector' || b.type === 'sprinkler') && !this.powered) {
+      ctx.fillStyle = '#ff5050'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('⚡', cx, py + 12);
     }
   }
 }
