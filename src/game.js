@@ -3,6 +3,7 @@ import {
   TILE, COLS, ROWS, DAY_LENGTH, DAYS_PER_QUOTA, QUOTA_GROWTH, CROPS, CROP_ORDER, HUNGER_COST,
   FARM_TIERS, FARM_ORIGIN, TECH, BUILDINGS, DIRS,
 } from './data.js';
+import { loadPhysicsPref, itemMass, popItem, stepHeightAndDrag, moveWithBounce, resolveContacts, hailImpact } from './physics.js';
 import {
   CHARMS, CHARM_KEYS, deliveryHand, BOSSES, BOSS_KEYS, ORACLES, GOOD_ORACLES, BAD_ORACLES, rollSupply,
   PACTS, ROT_TIME, DEFAULT_GAMBITS,
@@ -28,8 +29,9 @@ const center = (t) => t * TILE + TILE / 2;
 let nextId = 1;
 
 export class Game {
-  constructor({ playerCount = 1, meta = { perks: {} }, trait = 'none', pacts = [] } = {}) {
+  constructor({ playerCount = 1, meta = { perks: {} }, trait = 'none', pacts = [], physics = loadPhysicsPref() } = {}) {
     const perks = meta.perks || {};
+    this.physics = physics; // 物理演算（実験機能）
     this.trait = trait;
     this.pacts = pacts.filter((k) => PACTS[k]);
     this.tiles = [];
@@ -376,6 +378,7 @@ export class Game {
 
   spawnItem(crop, x, y, extra = {}) {
     const it = { id: nextId++, crop, x, y, vx: rand(-40, 40), vy: rand(-40, 40), state: 'ground', cut: false, lastTile: null, cd: 0, age: 0, ...extra };
+    if (this.physics && extra.vz === undefined && !extra.noSuck) popItem(it);
     this.items.push(it);
     return it;
   }
@@ -895,11 +898,12 @@ export class Game {
     for (const it of this.items) {
       if (it.dead || it.state !== 'ground') continue;
       if (!reach.includes(`${tileOf(it.x)},${tileOf(it.y)}`)) continue;
-      it.vx += d.x * 420 * dt; it.vy += d.y * 420 * dt;
+      const m = this.physics ? itemMass(it.crop) : 1;
+      it.vx += d.x * 420 * dt / m; it.vy += d.y * 420 * dt / m;
       // 風の軸に寄せる
       if (d.x) it.vy += (center(b.y) - it.y) * 3 * dt; else it.vx += (center(b.x) - it.x) * 3 * dt;
-      const sp = Math.hypot(it.vx, it.vy);
-      if (sp > 170) { it.vx *= 170 / sp; it.vy *= 170 / sp; }
+      const sp = Math.hypot(it.vx, it.vy), cap = 170 / m;
+      if (sp > cap) { it.vx *= cap / sp; it.vy *= cap / sp; }
     }
     if (Math.random() < dt * 6) {
       this.particles.push({ x: center(b.x) + d.x * 14, y: center(b.y) + d.y * 14, vx: d.x * 160, vy: d.y * 160, life: 0.5, color: '#ffffff66', size: 2 });
@@ -954,6 +958,7 @@ export class Game {
       const tx = tileOf(it.x), ty = tileOf(it.y);
       const here = this.inBounds(tx, ty) ? this.bAt[ty][tx] : null;
       let onConveyor = false;
+      if (here && CONVEYORS[here.type] && it.z) { it.z = 0; it.vz = 0; } // ベルトに乗ったら着地させる
       if (here && CONVEYORS[here.type] && this.powered) {
         const d = DIRS[here.dir];
         const sp = CONVEYORS[here.type] * TILE;
@@ -962,16 +967,25 @@ export class Game {
         onConveyor = true;
       } else if (here && CONVEYORS[here.type]) {
         it.vx = 0; it.vy = 0;
+      } else if (this.physics) {
+        stepHeightAndDrag(it, dt);
       } else {
         const f = Math.max(0, 1 - 3.5 * dt);
         it.vx *= f; it.vy *= f;
       }
       it.onConveyor = onConveyor;
-      if (storm && !onConveyor) { it.vx += this.weather.wind.x * 160 * dt; it.vy += this.weather.wind.y * 160 * dt; }
+      if (storm && !onConveyor) {
+        const m = this.physics ? itemMass(it.crop) : 1;
+        it.vx += this.weather.wind.x * 160 * dt / m; it.vy += this.weather.wind.y * 160 * dt / m;
+      }
       // 移動と衝突
-      let nx = it.x + it.vx * dt, ny = it.y + it.vy * dt;
-      if (this.itemBlocked(nx, it.y)) { nx = it.x; it.vx = 0; }
-      if (this.itemBlocked(nx, ny)) { ny = it.y; it.vy = 0; }
+      let nx, ny;
+      if (this.physics) [nx, ny] = moveWithBounce(it, dt, (x, y) => this.itemBlocked(x, y));
+      else {
+        nx = it.x + it.vx * dt; ny = it.y + it.vy * dt;
+        if (this.itemBlocked(nx, it.y)) { nx = it.x; it.vx = 0; }
+        if (this.itemBlocked(nx, ny)) { ny = it.y; it.vy = 0; }
+      }
       it.x = clamp(nx, 6, W - 6); it.y = clamp(ny, 6, H - 6);
       const key = `${tileOf(it.x)},${tileOf(it.y)}`;
       if (key !== it.lastTile) {
@@ -979,6 +993,7 @@ export class Game {
         this.itemEnter(it);
       }
     }
+    if (this.physics) resolveContacts(this, (x, y) => this.itemBlocked(x, y));
     this.items = this.items.filter((it) => !it.dead);
   }
 
@@ -1138,7 +1153,13 @@ export class Game {
       }
       if (w.timer <= 0) { w.phase = 'clear'; w.timer = rand(22, 40) * (this.bossIs('monsoon') ? 0.5 : 1); this.say('天候が回復しました。'); }
     }
-    for (const h of this.hail) { h.h -= dt * 400; if (h.h <= 0) h.life -= dt * 3; }
+    for (const h of this.hail) {
+      h.h -= dt * 400;
+      if (h.h <= 0) {
+        if (this.physics && !h.hit) { h.hit = true; hailImpact(this, h.x, h.y); }
+        h.life -= dt * 3;
+      }
+    }
     this.hail = this.hail.filter((h) => h.life > 0);
   }
 
@@ -1439,10 +1460,14 @@ export class Game {
 
     // アイテム
     for (const it of this.items) {
-      const bob = it.state === 'ground' && !it.onConveyor ? Math.sin(it.age * 5 + it.id) * 1.5 : 0;
+      const z = it.state === 'ground' ? it.z || 0 : 0;
+      const bob = it.state === 'ground' && !it.onConveyor && !z ? Math.sin(it.age * 5 + it.id) * 1.5 : 0;
       const s = it.state === 'orbit' ? 20 : 24;
-      if (it.state === 'ground') { ctx.fillStyle = '#0003'; ctx.fillRect(it.x - 8, it.y + 7, 16, 3); }
-      drawSprite(ctx, itemSpriteKey(it.crop), it.x - s / 2, it.y - s / 2 + bob, s, s);
+      if (it.state === 'ground') {
+        const sw = 16 * Math.max(0.4, 1 - z / 60);
+        ctx.fillStyle = '#0003'; ctx.fillRect(it.x - sw / 2, it.y + 7, sw, 3);
+      }
+      drawSprite(ctx, itemSpriteKey(it.crop), it.x - s / 2, it.y - s / 2 + bob - z, s, s);
       // もうすぐ腐る作物は紫に点滅する
       if (it.crop !== 'rotten' && it.age > this.rotTime() - 10 && Math.sin(this.t * 10) > 0) {
         ctx.fillStyle = '#9b7bb588'; ctx.fillRect(it.x - 7, it.y - 7, 14, 14);
